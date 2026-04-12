@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: conduit
+  namespace: conduit
+  labels:
+    app: conduit
+spec:
+  replicas: 1
+  # Recreate strategy — SQLite cannot handle concurrent writers from two pods
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: conduit
+  template:
+    metadata:
+      labels:
+        app: conduit
+    spec:
+      containers:
+        - name: conduit
+          image: ghcr.io/dougrathbone/conduit:latest
+          ports:
+            - name: http
+              containerPort: 7456
+              protocol: TCP
+          env:
+            - name: CONDUIT_DATA_DIR
+              value: /data
+            - name: PORT
+              value: "7456"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: conduit-data

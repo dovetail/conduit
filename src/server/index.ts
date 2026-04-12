@@ -84,6 +84,11 @@ if (ipConfig.enabled) {
 
 app.use(createIpRestrictionMiddleware(ipConfig))
 
+// Health check for Kubernetes probes
+app.get('/health', (_req, res) => {
+  res.status(200).json({ status: 'ok' })
+})
+
 app.use(express.static(RENDERER_DIR))
 // SPA fallback — all non-API routes serve index.html
 app.get('*', (_req, res) => {

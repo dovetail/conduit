@@ -1,0 +1,36 @@
+# Uses the AWS Load Balancer Controller to provision an ALB.
+# If your cluster doesn't have it installed, see:
+# https://docs.aws.amazon.com/eks/latest/userguide/aws-load-balancer-controller.html
+#
+# Alternatively, change the Service type to LoadBalancer and skip this Ingress entirely.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: conduit
+  namespace: conduit
+  annotations:
+    # ALB provisioning
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    # ACM certificate for conduit.dovetaillabs.ai — replace with your cert ARN
+    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:REGION:ACCOUNT:certificate/CERTIFICATE_ID"
+    # WebSocket support — long idle timeout
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=3600
+    # Health check
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+spec:
+  ingressClassName: alb
+  rules:
+    - host: conduit.dovetaillabs.ai
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: conduit
+                port:
+                  number: 80
