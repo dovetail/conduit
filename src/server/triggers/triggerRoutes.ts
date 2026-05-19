@@ -3,7 +3,7 @@ import * as crypto from 'crypto'
 import type { TriggerService } from './triggerService'
 import type { TriggerContext, SlackTriggerConfig, WebhookTriggerConfig } from '../../shared/types'
 import { getTrigger, listAllEnabledTriggers } from '../../main/db/queries/triggers'
-import { serverStoreGet } from '../store'
+import { getSlackSigningSecret } from '../store'
 
 /**
  * Create Express routes for inbound trigger endpoints.
@@ -19,8 +19,7 @@ export function createTriggerRoutes(triggerService: TriggerService): Router {
   router.post('/slack', async (req: Request, res: Response) => {
     const body = req.body as Record<string, unknown>
 
-    // 1. Verify Slack signature
-    const signingSecret = serverStoreGet('slackSigningSecret') as string | undefined
+    const signingSecret = getSlackSigningSecret()
     if (signingSecret) {
       const timestamp = req.headers['x-slack-request-timestamp'] as string
       const slackSig = req.headers['x-slack-signature'] as string
@@ -30,7 +29,6 @@ export function createTriggerRoutes(triggerService: TriggerService): Router {
         return
       }
 
-      // Reject requests older than 5 minutes (replay protection)
       const now = Math.floor(Date.now() / 1000)
       if (Math.abs(now - parseInt(timestamp)) > 300) {
         res.status(401).json({ error: 'Slack request too old' })
@@ -47,13 +45,11 @@ export function createTriggerRoutes(triggerService: TriggerService): Router {
       }
     }
 
-    // 2. Handle url_verification challenge (Slack app setup)
     if (body.type === 'url_verification') {
       res.json({ challenge: body.challenge })
       return
     }
 
-    // 3. Handle event_callback
     if (body.type === 'event_callback') {
       const event = body.event as Record<string, unknown> | undefined
       if (!event) {
@@ -61,20 +57,16 @@ export function createTriggerRoutes(triggerService: TriggerService): Router {
         return
       }
 
-      // Only handle app_mention events
       if (event.type === 'app_mention') {
-        // Respond immediately (Slack requires < 3 seconds)
         res.status(200).send('ok')
 
         const channelId = event.channel as string
         const messageText = event.text as string
         const userId = event.user as string
 
-        // Find matching enabled slack triggers
-        const allTriggers = listAllEnabledTriggers().filter(t => t.type === 'slack')
-        const matching = allTriggers.filter(t => {
+        const allTriggers = (await listAllEnabledTriggers()).filter((t) => t.type === 'slack')
+        const matching = allTriggers.filter((t) => {
           const config = t.config as SlackTriggerConfig
-          // Match if no channel filter or channel matches
           return !config.channelFilter || config.channelFilter === channelId
         })
 
@@ -90,7 +82,6 @@ export function createTriggerRoutes(triggerService: TriggerService): Router {
               threadTs: event.thread_ts as string | undefined,
             },
           }
-          // Fire and forget — don't block the response
           triggerService.executeTrigger(trigger.id, context)
         }
 
@@ -105,7 +96,7 @@ export function createTriggerRoutes(triggerService: TriggerService): Router {
 
   router.post('/webhook/:triggerId', async (req: Request, res: Response) => {
     const triggerId = req.params.triggerId as string
-    const trigger = getTrigger(triggerId)
+    const trigger = await getTrigger(triggerId)
 
     if (!trigger || !trigger.enabled) {
       res.status(404).json({ error: 'Trigger not found or disabled' })
@@ -117,7 +108,6 @@ export function createTriggerRoutes(triggerService: TriggerService): Router {
       return
     }
 
-    // Verify signature if secret configured
     const config = trigger.config as WebhookTriggerConfig
     if (config.secret) {
       const signature = req.headers['x-conduit-signature'] as string

@@ -1,20 +1,45 @@
-version: '3.8'
+version: "3.9"
+
+# Local development stack. Spins up Postgres + Conduit.
+# For production, point DATABASE_URL at your managed Postgres and
+# inject secrets via your platform's secret manager (e.g. ESO + AWS SM).
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: conduit
+      POSTGRES_PASSWORD: conduit
+      POSTGRES_DB: conduit
+    ports:
+      - "5432:5432"
+    volumes:
+      - conduit-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U conduit"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   conduit:
-    image: ghcr.io/dougrathbone/conduit:latest
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "7456:7456"
-    volumes:
-      - conduit_data:/data
-      # Uncomment to make host CLI tools available inside the container:
-      # - /usr/local/bin/claude:/usr/local/bin/claude:ro
-      # - /usr/local/bin/amp:/usr/local/bin/amp:ro
     environment:
-      - PORT=7456
-      - CONDUIT_DATA_DIR=/data
-      # Restrict access to specific IPs/CIDRs (comma-separated):
-      # - CONDUIT_ALLOWED_IPS=127.0.0.1,192.168.0.0/24,10.0.0.0/8
+      DATABASE_URL: postgres://conduit:conduit@postgres:5432/conduit
+      PORT: "7456"
+      CONDUIT_DATA_DIR: /data
+      # Optional:
+      # GITHUB_PAT: ghp_xxx
+      # SLACK_SIGNING_SECRET: xxx
+      # SENTRY_DSN: https://xxx@sentry.io/yyy
+      # CONDUIT_ALLOWED_IPS: 127.0.0.1,10.0.0.0/8
+    volumes:
+      - conduit-data:/data
 
 volumes:
-  conduit_data:
+  conduit-pg-data:
+  conduit-data:

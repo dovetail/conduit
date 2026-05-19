@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm'
-import { drizzleDb } from '../index'
+import { getDb } from '../index'
 import { publishTargets } from '../schema'
 import type { PublishTarget, SlackPublishConfig } from '../../../shared/types'
 
@@ -9,66 +9,64 @@ function rowToPublishTarget(row: typeof publishTargets.$inferSelect): PublishTar
     name: row.name,
     type: row.type as PublishTarget['type'],
     config: JSON.parse(row.config) as SlackPublishConfig,
-    enabled: row.enabled === 1,
+    enabled: row.enabled,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }
 }
 
-export function listPublishTargets(): PublishTarget[] {
-  const rows = drizzleDb.select().from(publishTargets).all()
+export async function listPublishTargets(): Promise<PublishTarget[]> {
+  const rows = await getDb().select().from(publishTargets)
   return rows.map(rowToPublishTarget)
 }
 
-export function getPublishTarget(id: string): PublishTarget | null {
-  const rows = drizzleDb.select().from(publishTargets).where(eq(publishTargets.id, id)).all()
+export async function getPublishTarget(id: string): Promise<PublishTarget | null> {
+  const rows = await getDb().select().from(publishTargets).where(eq(publishTargets.id, id))
   if (rows.length === 0) return null
   return rowToPublishTarget(rows[0])
 }
 
-export function createPublishTarget(
+export async function createPublishTarget(
   data: Omit<PublishTarget, 'id' | 'createdAt' | 'updatedAt'>
-): PublishTarget {
+): Promise<PublishTarget> {
   const now = Date.now()
   const id = crypto.randomUUID()
 
-  drizzleDb.insert(publishTargets).values({
+  await getDb().insert(publishTargets).values({
     id,
     name: data.name,
     type: data.type,
     config: JSON.stringify(data.config),
-    enabled: data.enabled ? 1 : 0,
+    enabled: data.enabled,
     createdAt: now,
     updatedAt: now,
-  }).run()
+  })
 
-  const created = getPublishTarget(id)
+  const created = await getPublishTarget(id)
   if (!created) throw new Error(`Failed to create publish target with id ${id}`)
   return created
 }
 
-export function updatePublishTarget(
+export async function updatePublishTarget(
   id: string,
   data: Partial<Omit<PublishTarget, 'id' | 'createdAt' | 'updatedAt'>>
-): PublishTarget {
+): Promise<PublishTarget> {
   const now = Date.now()
 
-  const updateValues: Partial<typeof publishTargets.$inferInsert> = {
-    updatedAt: now,
-  }
+  const updateValues: Partial<typeof publishTargets.$inferInsert> = { updatedAt: now }
 
   if (data.name !== undefined) updateValues.name = data.name
   if (data.type !== undefined) updateValues.type = data.type
   if (data.config !== undefined) updateValues.config = JSON.stringify(data.config)
-  if (data.enabled !== undefined) updateValues.enabled = data.enabled ? 1 : 0
+  if (data.enabled !== undefined) updateValues.enabled = data.enabled
 
-  drizzleDb.update(publishTargets).set(updateValues).where(eq(publishTargets.id, id)).run()
+  await getDb().update(publishTargets).set(updateValues).where(eq(publishTargets.id, id))
 
-  const updated = getPublishTarget(id)
+  const updated = await getPublishTarget(id)
   if (!updated) throw new Error(`Publish target with id ${id} not found after update`)
   return updated
 }
 
-export function deletePublishTarget(id: string): void {
-  drizzleDb.delete(publishTargets).where(eq(publishTargets.id, id)).run()
+export async function deletePublishTarget(id: string): Promise<void> {
+  await getDb().delete(publishTargets).where(eq(publishTargets.id, id))
 }

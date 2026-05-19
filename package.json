@@ -3,14 +3,14 @@
   "version": "0.1.0",
   "description": "A managed execution environment for AI CLI agents",
   "author": {
-    "name": "Doug Rathbone",
-    "email": "dougrathbone@gmail.com"
+    "name": "Dovetail",
+    "email": "releasebot@dovetailapp.com"
   },
   "license": "MIT",
-  "homepage": "https://github.com/dougrathbone/conduit",
+  "homepage": "https://github.com/heydovetail/conduit",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dougrathbone/conduit.git"
+    "url": "https://github.com/heydovetail/conduit.git"
   },
   "scripts": {
     "dev": "concurrently --names \"ui,server\" --prefix-colors \"cyan,magenta\" \"vite build --watch --config vite.server.config.ts\" \"tsx watch src/server/index.ts\"",
@@ -20,7 +20,9 @@
     "docker:run": "docker run -p 7456:7456 conduit",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "lint": "eslint . --ext .ts,.tsx --report-unused-disable-directives",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/main/db/migrate.ts",
     "seed": "tsx scripts/seed-global-mcps.ts"
   },
   "dependencies": {
@@ -28,12 +30,13 @@
     "@codemirror/lang-json": "^6.0.1",
     "@codemirror/theme-one-dark": "^6.1.2",
     "@octokit/rest": "^21.0.2",
+    "@sentry/node": "^8.45.0",
+    "@sentry/react": "^8.45.0",
     "@tanstack/react-query": "^5.62.16",
     "@uiw/react-codemirror": "^4.23.7",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/xterm": "^5.5.0",
-    "better-sqlite3": "^11.7.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
@@ -42,6 +45,7 @@
     "lucide-react": "^0.468.0",
     "node-cron": "^4.2.1",
     "nodemailer": "^8.0.5",
+    "pg": "^8.13.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-resizable-panels": "^2.1.7",
@@ -50,11 +54,11 @@
     "zustand": "^5.0.3"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.7",
     "@types/node-cron": "^3.0.11",
     "@types/nodemailer": "^8.0.0",
+    "@types/pg": "^8.11.10",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@types/ws": "^8.5.13",

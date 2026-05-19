@@ -78,7 +78,7 @@ export async function sendMessageServer(
 
   session.messages.push({ role: 'user', content: userMessage })
 
-  const agent = getAgent(session.agentId)
+  const agent = await getAgent(session.agentId)
   if (!agent) throw new Error('Agent not found')
 
   const client = getAnthropicClient()

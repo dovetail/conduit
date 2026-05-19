@@ -13,9 +13,8 @@ export class TriggerService {
     this.broadcast = broadcast
   }
 
-  /** Load all enabled triggers from DB and register cron jobs. Called at server startup. */
-  start(): void {
-    const triggers = listAllEnabledTriggers()
+  async start(): Promise<void> {
+    const triggers = await listAllEnabledTriggers()
     let cronCount = 0
     for (const trigger of triggers) {
       if (trigger.type === 'cron') {
@@ -29,15 +28,13 @@ export class TriggerService {
   }
 
   stop(): void {
-    for (const [id, task] of this.cronJobs) {
+    for (const [, task] of this.cronJobs) {
       task.stop()
     }
     this.cronJobs.clear()
   }
 
-  /** Register or re-register a trigger (called on create/update). */
   registerTrigger(trigger: Trigger): void {
-    // Unregister first if exists
     this.unregisterTrigger(trigger.id)
 
     if (!trigger.enabled) return
@@ -45,10 +42,8 @@ export class TriggerService {
     if (trigger.type === 'cron') {
       this.registerCron(trigger)
     }
-    // Slack and webhook triggers are stateless — they respond to inbound HTTP requests
   }
 
-  /** Unregister a trigger (called on delete/disable). */
   unregisterTrigger(triggerId: string): void {
     const existing = this.cronJobs.get(triggerId)
     if (existing) {
@@ -57,9 +52,8 @@ export class TriggerService {
     }
   }
 
-  /** Execute a trigger — start an agent run with optional context. */
   async executeTrigger(triggerId: string, context?: TriggerContext): Promise<ExecutionRun | null> {
-    const trigger = getTrigger(triggerId)
+    const trigger = await getTrigger(triggerId)
     if (!trigger || !trigger.enabled) {
       console.warn(`[triggers] Trigger ${triggerId} not found or disabled`)
       return null
@@ -70,16 +64,13 @@ export class TriggerService {
         triggerId: trigger.id,
         triggerType: trigger.type,
       }
-      // Ensure triggerId and type are set
       triggerContext.triggerId = trigger.id
       triggerContext.triggerType = trigger.type
 
       const run = await startRunServer(trigger.agentId, this.broadcast, triggerContext)
 
-      // Update lastTriggeredAt
-      updateTrigger(trigger.id, { lastTriggeredAt: Date.now() })
+      await updateTrigger(trigger.id, { lastTriggeredAt: Date.now() })
 
-      // Broadcast trigger:fired event
       this.broadcast('trigger:fired', {
         triggerId: trigger.id,
         agentId: trigger.agentId,
@@ -103,9 +94,15 @@ export class TriggerService {
     if (config.timezone) options.timezone = config.timezone
 
     try {
-      const task = cron.schedule(config.expression, () => {
-        this.executeTrigger(trigger.id)
-      }, options)
+      const task = cron.schedule(
+        config.expression,
+        () => {
+          this.executeTrigger(trigger.id).catch((err) =>
+            console.error(`[triggers] Cron execution failed for ${trigger.id}:`, err)
+          )
+        },
+        options
+      )
 
       this.cronJobs.set(trigger.id, task)
     } catch (err) {
