@@ -1,7 +1,8 @@
 import * as Sentry from '@sentry/node'
+import { loadSecretsFromAwsSm } from './awsSecrets'
 
-// Initialise Sentry as early as possible so it captures startup errors.
-if (process.env.SENTRY_DSN) {
+function initSentry(): void {
+  if (!process.env.SENTRY_DSN) return
   Sentry.init({
     dsn: process.env.SENTRY_DSN,
     environment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV ?? 'production',
@@ -436,6 +437,13 @@ httpServer.on('upgrade', (req, socket, head) => {
 const repoSyncService = new RepoSyncService(broadcast)
 
 async function start(): Promise<void> {
+  // Hydrate env vars from AWS Secrets Manager before anything else reads
+  // process.env. No-op when CONDUIT_SECRETS_ARN is unset (local dev).
+  await loadSecretsFromAwsSm()
+
+  // Sentry init has to wait until SENTRY_DSN may have been hydrated above.
+  initSentry()
+
   await initDb()
 
   const orphaned = await getOrphanedRuns()
