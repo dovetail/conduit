@@ -57,6 +57,7 @@ Conduit supports multi-user authentication via Okta OIDC. When Okta is not confi
 | `CONDUIT_OKTA_REDIRECT_URI` | Callback URL (default: `http://localhost:7456/auth/callback`) |
 | `CONDUIT_SESSION_SECRET` | Secret for signing session cookies |
 | `CONDUIT_SESSION_TTL_MS` | Session lifetime in ms (default: 86400000 / 24h) |
+| `CONDUIT_OKTA_API_TOKEN` | Okta API token for user search (optional — enables sharing with users who haven't logged in yet) |
 
 **Auth flow**: OIDC Authorization Code + PKCE. Sessions stored in SQLite. Groups synced from Okta ID token `groups` claim on each login.
 

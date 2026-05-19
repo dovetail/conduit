@@ -462,9 +462,16 @@ const handlers: Record<string, HandlerFn> = {
     return Promise.resolve()
   },
 
-  // Users
+  // Users — use Okta Management API when available, fall back to local DB
   'users:list': () => Promise.resolve(listUsers()),
-  'users:search': ([query]) => Promise.resolve(searchUsers(query as string)),
+  'users:search': async ([query]) => {
+    if (isAuthEnabled()) {
+      const { searchOktaUsers } = await import('./auth/okta')
+      const oktaResults = await searchOktaUsers(query as string)
+      if (oktaResults.length > 0) return oktaResults
+    }
+    return searchUsers(query as string)
+  },
 
   // Groups
   'groups:list': () => Promise.resolve(listGroups()),

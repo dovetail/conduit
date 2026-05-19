@@ -19,5 +19,6 @@ export function getOktaConfig() {
     redirectUri: process.env.CONDUIT_OKTA_REDIRECT_URI || 'http://localhost:7456/auth/callback',
     sessionSecret: process.env.CONDUIT_SESSION_SECRET || 'conduit-dev-secret',
     sessionTtlMs: parseInt(process.env.CONDUIT_SESSION_TTL_MS || '86400000', 10),
+    apiToken: process.env.CONDUIT_OKTA_API_TOKEN,
   }
 }
