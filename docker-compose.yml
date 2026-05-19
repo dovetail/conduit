@@ -1,5 +1,3 @@
-version: "3.9"
-
 # Local development stack. Spins up Postgres + Conduit.
 # For production, point DATABASE_URL at your managed Postgres and
 # inject secrets via your platform's secret manager (e.g. ESO + AWS SM).
@@ -30,6 +28,7 @@ services:
       - "7456:7456"
     environment:
       DATABASE_URL: postgres://conduit:conduit@postgres:5432/conduit
+      DATABASE_SSL: disable
       PORT: "7456"
       CONDUIT_DATA_DIR: /data
       # Optional:
