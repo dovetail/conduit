@@ -1,8 +1,7 @@
 import * as Sentry from '@sentry/node'
-import { loadSecretsFromAwsSm } from './awsSecrets'
 
-function initSentry(): void {
-  if (!process.env.SENTRY_DSN) return
+// Initialise Sentry as early as possible so it captures startup errors.
+if (process.env.SENTRY_DSN) {
   Sentry.init({
     dsn: process.env.SENTRY_DSN,
     environment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV ?? 'production',
@@ -437,13 +436,6 @@ httpServer.on('upgrade', (req, socket, head) => {
 const repoSyncService = new RepoSyncService(broadcast)
 
 async function start(): Promise<void> {
-  // Hydrate env vars from AWS Secrets Manager before anything else reads
-  // process.env. No-op when CONDUIT_SECRETS_ARN is unset (local dev).
-  await loadSecretsFromAwsSm()
-
-  // Sentry init has to wait until SENTRY_DSN may have been hydrated above.
-  initSentry()
-
   await initDb()
 
   const orphaned = await getOrphanedRuns()
@@ -460,6 +452,23 @@ async function start(): Promise<void> {
   httpServer.listen(PORT, () => {
     console.log(`Conduit server running at http://localhost:${PORT}`)
   })
+
+  // Graceful shutdown. K8s sends SIGTERM and waits up to
+  // terminationGracePeriodSeconds (default 30s) before SIGKILL.
+  let shuttingDown = false
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return
+    shuttingDown = true
+    console.log(`[server] Received ${signal}, draining…`)
+    httpServer.close(() => console.log('[server] HTTP server closed'))
+    for (const ws of clients) ws.close(1001, 'Server shutting down')
+    triggerService.stop()
+    repoSyncService.stop()
+    // Give in-flight requests up to 10s to finish, then exit.
+    setTimeout(() => process.exit(0), 10_000).unref()
+  }
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
+  process.on('SIGINT', () => shutdown('SIGINT'))
 }
 
 start().catch((err) => {
