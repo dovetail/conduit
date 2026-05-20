@@ -1,20 +1,29 @@
-import Database from 'better-sqlite3'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
-import { DB_PATH } from '../utils/paths'
+import { Pool } from 'pg'
+import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import * as schema from './schema'
 
-let db: Database.Database
-let drizzleDb: ReturnType<typeof drizzle>
+let pool: Pool
+let drizzleDb: NodePgDatabase<typeof schema>
 
-export function initDb(): void {
-  db = new Database(DB_PATH)
+export async function initDb(): Promise<void> {
+  const databaseUrl = process.env.DATABASE_URL
+  if (!databaseUrl) {
+    throw new Error('DATABASE_URL is required (e.g. postgres://user:pass@host:5432/db)')
+  }
 
-  // Enable WAL mode for better concurrent read performance
-  db.pragma('journal_mode = WAL')
-  db.pragma('foreign_keys = ON')
+  pool = new Pool({
+    connectionString: databaseUrl,
+    // RDS Postgres requires SSL; node-postgres validates by default but we
+    // disable verification for the in-cluster CA bundle. Tighten if you ship
+    // RDS root CA.
+    ssl: process.env.DATABASE_SSL === 'disable' ? false : { rejectUnauthorized: false },
+  })
 
-  // Create tables if they don't exist
-  db.exec(`
+  drizzleDb = drizzle(pool, { schema })
+
+  // Idempotent schema bootstrap. Drizzle migrations land here once we
+  // generate them; for now this matches the columns referenced by the app.
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS agents (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -24,8 +33,10 @@ export function initDb(): void {
       mcp_config TEXT NOT NULL DEFAULT '{"mcpServers":{}}',
       gist_id TEXT,
       working_dir TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      publish_target_ids TEXT,
+      repository_id TEXT,
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS global_mcp_servers (
@@ -33,22 +44,22 @@ export function initDb(): void {
       name TEXT NOT NULL,
       server_key TEXT NOT NULL,
       server_config TEXT NOT NULL,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS runs (
       id TEXT PRIMARY KEY,
-      agent_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL REFERENCES agents(id),
       status TEXT NOT NULL,
-      started_at INTEGER NOT NULL,
-      ended_at INTEGER,
-      duration_ms INTEGER,
+      started_at BIGINT NOT NULL,
+      ended_at BIGINT,
+      duration_ms BIGINT,
       workspace_path TEXT,
       log_path TEXT NOT NULL,
-      exit_code INTEGER,
-      FOREIGN KEY (agent_id) REFERENCES agents(id)
+      exit_code BIGINT,
+      trigger_context TEXT
     );
 
     CREATE TABLE IF NOT EXISTS publish_targets (
@@ -56,29 +67,28 @@ export function initDb(): void {
       name TEXT NOT NULL,
       type TEXT NOT NULL DEFAULT 'slack',
       config TEXT NOT NULL DEFAULT '{}',
-      enabled INTEGER NOT NULL DEFAULT 1,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS triggers (
       id TEXT PRIMARY KEY,
-      agent_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
       type TEXT NOT NULL,
       config TEXT NOT NULL DEFAULT '{}',
-      enabled INTEGER NOT NULL DEFAULT 1,
-      last_triggered_at INTEGER,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      last_triggered_at BIGINT,
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS oauth_tokens (
       server_url TEXT PRIMARY KEY,
       access_token TEXT NOT NULL,
       refresh_token TEXT,
-      expires_at INTEGER,
+      expires_at BIGINT,
       token_type TEXT NOT NULL DEFAULT 'Bearer',
       scope TEXT
     );
@@ -91,20 +101,21 @@ export function initDb(): void {
       auth_method TEXT NOT NULL DEFAULT 'none',
       sync_status TEXT NOT NULL DEFAULT 'pending',
       sync_error TEXT,
-      last_synced_at INTEGER,
+      last_synced_at BIGINT,
       clone_path TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL
     );
   `)
-
-  // Migrations: add columns added after initial schema
-  try { db.exec('ALTER TABLE agents ADD COLUMN working_dir TEXT') } catch { /* already exists */ }
-  try { db.exec('ALTER TABLE agents ADD COLUMN publish_target_ids TEXT') } catch { /* already exists */ }
-  try { db.exec('ALTER TABLE agents ADD COLUMN repository_id TEXT') } catch { /* already exists */ }
-  try { db.exec('ALTER TABLE runs ADD COLUMN trigger_context TEXT') } catch { /* already exists */ }
-
-  drizzleDb = drizzle(db, { schema })
 }
 
-export { db, drizzleDb }
+export async function closeDb(): Promise<void> {
+  if (pool) await pool.end()
+}
+
+export function getDb(): NodePgDatabase<typeof schema> {
+  if (!drizzleDb) throw new Error('Database not initialized. Call initDb() first.')
+  return drizzleDb
+}
+
+export { drizzleDb }

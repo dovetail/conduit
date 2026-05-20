@@ -1,5 +1,5 @@
 import { eq, desc } from 'drizzle-orm'
-import { drizzleDb } from '../index'
+import { getDb } from '../index'
 import { runs } from '../schema'
 import type { ExecutionRun, RunStatus, TriggerContext } from '../../../shared/types'
 
@@ -14,32 +14,29 @@ function rowToExecutionRun(row: typeof runs.$inferSelect): ExecutionRun {
     workspacePath: row.workspacePath ?? undefined,
     logPath: row.logPath,
     exitCode: row.exitCode ?? undefined,
-    triggerContext: row.triggerContext ? JSON.parse(row.triggerContext) as TriggerContext : undefined,
+    triggerContext: row.triggerContext ? (JSON.parse(row.triggerContext) as TriggerContext) : undefined,
   }
 }
 
-export function listRuns(agentId: string): ExecutionRun[] {
-  const rows = drizzleDb
+export async function listRuns(agentId: string): Promise<ExecutionRun[]> {
+  const rows = await getDb()
     .select()
     .from(runs)
     .where(eq(runs.agentId, agentId))
     .orderBy(desc(runs.startedAt))
-    .all()
   return rows.map(rowToExecutionRun)
 }
 
-export function getRun(id: string): ExecutionRun | null {
-  const rows = drizzleDb.select().from(runs).where(eq(runs.id, id)).all()
+export async function getRun(id: string): Promise<ExecutionRun | null> {
+  const rows = await getDb().select().from(runs).where(eq(runs.id, id))
   if (rows.length === 0) return null
   return rowToExecutionRun(rows[0])
 }
 
-export function createRun(
-  data: Omit<ExecutionRun, 'id'>
-): ExecutionRun {
+export async function createRun(data: Omit<ExecutionRun, 'id'>): Promise<ExecutionRun> {
   const id = crypto.randomUUID()
 
-  drizzleDb.insert(runs).values({
+  await getDb().insert(runs).values({
     id,
     agentId: data.agentId,
     status: data.status,
@@ -50,17 +47,17 @@ export function createRun(
     logPath: data.logPath,
     exitCode: data.exitCode ?? null,
     triggerContext: data.triggerContext ? JSON.stringify(data.triggerContext) : null,
-  }).run()
+  })
 
-  const created = getRun(id)
+  const created = await getRun(id)
   if (!created) throw new Error(`Failed to create run with id ${id}`)
   return created
 }
 
-export function updateRun(
+export async function updateRun(
   id: string,
   data: Partial<Omit<ExecutionRun, 'id'>>
-): ExecutionRun {
+): Promise<ExecutionRun> {
   const updateValues: Partial<typeof runs.$inferInsert> = {}
 
   if (data.agentId !== undefined) updateValues.agentId = data.agentId
@@ -72,18 +69,14 @@ export function updateRun(
   if (data.logPath !== undefined) updateValues.logPath = data.logPath
   if ('exitCode' in data) updateValues.exitCode = data.exitCode ?? null
 
-  drizzleDb.update(runs).set(updateValues).where(eq(runs.id, id)).run()
+  await getDb().update(runs).set(updateValues).where(eq(runs.id, id))
 
-  const updated = getRun(id)
+  const updated = await getRun(id)
   if (!updated) throw new Error(`Run with id ${id} not found after update`)
   return updated
 }
 
-export function getOrphanedRuns(): ExecutionRun[] {
-  const rows = drizzleDb
-    .select()
-    .from(runs)
-    .where(eq(runs.status, 'running'))
-    .all()
+export async function getOrphanedRuns(): Promise<ExecutionRun[]> {
+  const rows = await getDb().select().from(runs).where(eq(runs.status, 'running'))
   return rows.map(rowToExecutionRun)
 }

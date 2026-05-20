@@ -3,44 +3,43 @@ FROM node:22-slim AS builder
 
 WORKDIR /app
 
-# Install build tools for native modules (better-sqlite3)
-RUN apt-get update && \
-    apt-get install -y python3 make g++ && \
-    rm -rf /var/lib/apt/lists/*
-
 COPY package*.json ./
 RUN npm ci
 
 COPY . .
 
-# Build React renderer → out/renderer/
-RUN npx vite build --config vite.server.config.ts
+# Build renderer (out/renderer/) + server JS (out/server/)
+RUN npm run build
 
 # ─── Production stage ────────────────────────────────────────────────────────
 FROM node:22-slim
 
 WORKDIR /app
 
-# Build tools for better-sqlite3 native module
+# git is required at runtime for repository sync (clone/fetch/worktree).
+# No PID-1 wrapper (tini/dumb-init): Node 22 receives signals correctly when
+# used as PID 1 with an exec-form ENTRYPOINT, and the server installs its
+# own SIGTERM/SIGINT handlers for graceful shutdown.
 RUN apt-get update && \
-    apt-get install -y python3 make g++ && \
+    apt-get install -y --no-install-recommends git ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
-RUN npm ci
+RUN npm ci --omit=dev && npm cache clean --force
 
-# Copy TypeScript source (tsx runs TS directly — no separate compile step)
-COPY src ./src
-COPY tsconfig*.json ./
+# Compiled JS only — no TS source / tsx runtime in the image.
+COPY --from=builder /app/out ./out
 
-# Copy built frontend from builder
-COPY --from=builder /app/out/renderer ./out/renderer
-
-# /data is the persistent volume for the SQLite DB, logs, and prefs
+# /data is the persistent volume for run logs and bare git clones.
+# The Postgres database lives in RDS (see DATABASE_URL).
 VOLUME /data
 ENV CONDUIT_DATA_DIR=/data
 ENV PORT=7456
+ENV NODE_ENV=production
 
 EXPOSE 7456
 
-CMD ["npx", "tsx", "src/server/index.ts"]
+# Run an unprivileged user. The `node` user is provided by the official image.
+USER node
+
+ENTRYPOINT ["node", "out/server/index.js"]

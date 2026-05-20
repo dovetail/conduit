@@ -9,8 +9,8 @@ import { getToken } from '../db/queries/oauthTokens'
  * Merges global MCP servers with agent-specific MCP config.
  * Global MCPs form the base layer; agent MCPs override on key conflict.
  */
-export function buildMergedMcpConfig(agentMcpConfig: McpServersConfig): McpServersConfig {
-  const globalMcps = listEnabledGlobalMcps()
+export async function buildMergedMcpConfig(agentMcpConfig: McpServersConfig): Promise<McpServersConfig> {
+  const globalMcps = await listEnabledGlobalMcps()
   const globalServers: Record<string, McpServerEntry> = {}
   for (const g of globalMcps) {
     globalServers[g.serverKey] = g.serverConfig
@@ -27,11 +27,11 @@ export function buildMergedMcpConfig(agentMcpConfig: McpServersConfig): McpServe
  * For each URL-type MCP server in the config, look up any stored OAuth token
  * and inject it as an Authorization header if it is still valid.
  */
-export function injectOAuthTokens(config: McpServersConfig): McpServersConfig {
+export async function injectOAuthTokens(config: McpServersConfig): Promise<McpServersConfig> {
   const updated: Record<string, McpServerEntry> = {}
   for (const [key, entry] of Object.entries(config.mcpServers)) {
     if (entry.type === 'url' && entry.url) {
-      const token = getToken(entry.url)
+      const token = await getToken(entry.url)
       if (token && (!token.expiresAt || token.expiresAt > Date.now())) {
         updated[key] = {
           ...entry,
@@ -48,10 +48,6 @@ export function injectOAuthTokens(config: McpServersConfig): McpServersConfig {
   return { mcpServers: updated }
 }
 
-/**
- * Expands ${VAR_NAME} placeholders in MCP server config strings using process.env.
- * Applies to env values and args strings. Unset variables are left as-is.
- */
 function expandEnvVars(value: string): string {
   return value.replace(/\$\{([^}]+)\}/g, (match, name) => process.env[name] ?? match)
 }
@@ -81,17 +77,14 @@ function resolveAllEnvVars(config: McpServersConfig): McpServersConfig {
  * Writes an MCP config JSON file to the OS temp directory.
  * Returns the path to the written file.
  */
-export function writeMcpConfig(runId: string, config: McpServersConfig): string {
-  const withTokens = injectOAuthTokens(config)
+export async function writeMcpConfig(runId: string, config: McpServersConfig): Promise<string> {
+  const withTokens = await injectOAuthTokens(config)
   const withEnv = resolveAllEnvVars(withTokens)
   const filePath = path.join(os.tmpdir(), `conduit-mcp-${runId}.json`)
   fs.writeFileSync(filePath, JSON.stringify(withEnv, null, 2), 'utf8')
   return filePath
 }
 
-/**
- * Deletes the MCP config file for a given run. Silently ignores errors.
- */
 export function deleteMcpConfig(runId: string): void {
   const filePath = path.join(os.tmpdir(), `conduit-mcp-${runId}.json`)
   try {

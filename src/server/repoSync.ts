@@ -8,7 +8,6 @@ import type { RepoSyncStatus } from '../shared/types'
 
 /**
  * Background service that keeps repository clones up-to-date.
- * Runs periodic fetches and handles initial clones for new repos.
  */
 export class RepoSyncService {
   private intervalId: NodeJS.Timeout | null = null
@@ -19,11 +18,14 @@ export class RepoSyncService {
     this.broadcast = broadcast
   }
 
-  /** Start the sync loop. Runs an initial sync immediately, then on interval. */
   start(intervalMs: number = 5 * 60 * 1000): void {
-    this.cleanupStaleWorktrees()
-    this.syncAll()
-    this.intervalId = setInterval(() => this.syncAll(), intervalMs)
+    this.cleanupStaleWorktrees().catch((err) =>
+      console.error('[repoSync] cleanupStaleWorktrees failed:', err)
+    )
+    this.syncAll().catch((err) => console.error('[repoSync] Initial sync failed:', err))
+    this.intervalId = setInterval(() => {
+      this.syncAll().catch((err) => console.error('[repoSync] Periodic sync failed:', err))
+    }, intervalMs)
   }
 
   stop(): void {
@@ -33,29 +35,25 @@ export class RepoSyncService {
     }
   }
 
-  /** Sync all repositories. */
   async syncAll(): Promise<void> {
-    const repos = listRepositories()
+    const repos = await listRepositories()
     for (const repo of repos) {
-      // Fire-and-forget each repo sync so one failure doesn't block others
       this.syncRepo(repo.id).catch((err) =>
         console.error(`[repoSync] Unexpected error syncing repo ${repo.id}:`, err)
       )
     }
   }
 
-  /** Manually trigger a sync for a single repo. */
   async triggerSync(repoId: string): Promise<void> {
     await this.syncRepo(repoId)
   }
 
-  /** Sync a single repository (clone if pending, fetch if ready). */
   async syncRepo(repoId: string): Promise<void> {
     if (this.syncInProgress.has(repoId)) return
     this.syncInProgress.add(repoId)
 
     try {
-      const repo = getRepository(repoId)
+      const repo = await getRepository(repoId)
       if (!repo || !repo.clonePath) return
 
       const pat = repo.authMethod === 'pat' ? getGithubPat() : undefined
@@ -63,37 +61,34 @@ export class RepoSyncService {
       const needsClone = repo.syncStatus === 'pending' || !fs.existsSync(repo.clonePath)
 
       if (needsClone) {
-        this.updateStatus(repoId, 'cloning')
+        await this.updateStatus(repoId, 'cloning')
         try {
           await cloneRepo(repo.url, repo.clonePath, repo.defaultBranch, pat)
-          updateRepository(repoId, {
+          await updateRepository(repoId, {
             syncStatus: 'ready',
             lastSyncedAt: Date.now(),
             syncError: undefined,
           })
-          this.broadcastStatus(repoId)
+          await this.broadcastStatus(repoId)
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
-          updateRepository(repoId, { syncStatus: 'error', syncError: message })
-          this.broadcastStatus(repoId)
+          await updateRepository(repoId, { syncStatus: 'error', syncError: message })
+          await this.broadcastStatus(repoId)
         }
       } else {
-        // Repo exists on disk — do a fetch
-        this.updateStatus(repoId, 'syncing')
+        await this.updateStatus(repoId, 'syncing')
         try {
           await fetchRepo(repo.clonePath, repo.url, pat)
-          updateRepository(repoId, {
+          await updateRepository(repoId, {
             syncStatus: 'ready',
             lastSyncedAt: Date.now(),
             syncError: undefined,
           })
-          this.broadcastStatus(repoId)
+          await this.broadcastStatus(repoId)
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
-          // Keep the repo usable — just mark the error but don't lose 'ready' state
-          // if we had a successful clone before
-          updateRepository(repoId, { syncStatus: 'error', syncError: message })
-          this.broadcastStatus(repoId)
+          await updateRepository(repoId, { syncStatus: 'error', syncError: message })
+          await this.broadcastStatus(repoId)
         }
       }
     } finally {
@@ -101,15 +96,13 @@ export class RepoSyncService {
     }
   }
 
-  /** Update the sync status in DB and broadcast to clients. */
-  private updateStatus(repoId: string, syncStatus: RepoSyncStatus): void {
-    updateRepository(repoId, { syncStatus })
-    this.broadcastStatus(repoId)
+  private async updateStatus(repoId: string, syncStatus: RepoSyncStatus): Promise<void> {
+    await updateRepository(repoId, { syncStatus })
+    await this.broadcastStatus(repoId)
   }
 
-  /** Broadcast the current status of a repo to all WebSocket clients. */
-  private broadcastStatus(repoId: string): void {
-    const repo = getRepository(repoId)
+  private async broadcastStatus(repoId: string): Promise<void> {
+    const repo = await getRepository(repoId)
     if (!repo) return
     this.broadcast('repo:syncStatus', {
       repoId,
@@ -119,12 +112,8 @@ export class RepoSyncService {
     })
   }
 
-  /**
-   * Clean up stale worktrees left over from crashed runs.
-   * Scans each repo's worktrees-run/ directory and removes orphaned worktrees.
-   */
-  private cleanupStaleWorktrees(): void {
-    const repos = listRepositories()
+  private async cleanupStaleWorktrees(): Promise<void> {
+    const repos = await listRepositories()
     for (const repo of repos) {
       if (!repo.clonePath) continue
       const worktreeRunDir = path.join(repo.clonePath, 'worktrees-run')

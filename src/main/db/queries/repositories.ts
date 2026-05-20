@@ -1,7 +1,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { eq } from 'drizzle-orm'
-import { drizzleDb } from '../index'
+import { getDb } from '../index'
 import { repositories, agents } from '../schema'
 import { REPOS_DIR } from '../../utils/paths'
 import type { Repository } from '../../../shared/types'
@@ -22,25 +22,25 @@ function rowToRepository(row: typeof repositories.$inferSelect): Repository {
   }
 }
 
-export function listRepositories(): Repository[] {
-  const rows = drizzleDb.select().from(repositories).all()
+export async function listRepositories(): Promise<Repository[]> {
+  const rows = await getDb().select().from(repositories)
   return rows.map(rowToRepository)
 }
 
-export function getRepository(id: string): Repository | null {
-  const rows = drizzleDb.select().from(repositories).where(eq(repositories.id, id)).all()
+export async function getRepository(id: string): Promise<Repository | null> {
+  const rows = await getDb().select().from(repositories).where(eq(repositories.id, id))
   if (rows.length === 0) return null
   return rowToRepository(rows[0])
 }
 
-export function createRepository(
+export async function createRepository(
   data: Omit<Repository, 'id' | 'createdAt' | 'updatedAt' | 'syncStatus' | 'clonePath'>
-): Repository {
+): Promise<Repository> {
   const now = Date.now()
   const id = crypto.randomUUID()
   const clonePath = path.join(REPOS_DIR, id)
 
-  drizzleDb.insert(repositories).values({
+  await getDb().insert(repositories).values({
     id,
     name: data.name,
     url: data.url,
@@ -50,22 +50,20 @@ export function createRepository(
     clonePath,
     createdAt: now,
     updatedAt: now,
-  }).run()
+  })
 
-  const created = getRepository(id)
+  const created = await getRepository(id)
   if (!created) throw new Error(`Failed to create repository with id ${id}`)
   return created
 }
 
-export function updateRepository(
+export async function updateRepository(
   id: string,
   data: Partial<Omit<Repository, 'id' | 'createdAt' | 'updatedAt'>>
-): Repository {
+): Promise<Repository> {
   const now = Date.now()
 
-  const updateValues: Partial<typeof repositories.$inferInsert> = {
-    updatedAt: now,
-  }
+  const updateValues: Partial<typeof repositories.$inferInsert> = { updatedAt: now }
 
   if (data.name !== undefined) updateValues.name = data.name
   if (data.url !== undefined) updateValues.url = data.url
@@ -76,29 +74,28 @@ export function updateRepository(
   if ('lastSyncedAt' in data) updateValues.lastSyncedAt = data.lastSyncedAt ?? null
   if ('clonePath' in data) updateValues.clonePath = data.clonePath ?? null
 
-  drizzleDb.update(repositories).set(updateValues).where(eq(repositories.id, id)).run()
+  await getDb().update(repositories).set(updateValues).where(eq(repositories.id, id))
 
-  const updated = getRepository(id)
+  const updated = await getRepository(id)
   if (!updated) throw new Error(`Repository with id ${id} not found after update`)
   return updated
 }
 
-export function deleteRepository(id: string): void {
-  // Unset repositoryId on any agents referencing this repo
-  const allAgents = drizzleDb.select().from(agents).all()
+export async function deleteRepository(id: string): Promise<void> {
+  const db = getDb()
+
+  const allAgents = await db.select().from(agents)
   for (const agent of allAgents) {
     if (agent.repositoryId === id) {
-      drizzleDb.update(agents).set({ repositoryId: null }).where(eq(agents.id, agent.id)).run()
+      await db.update(agents).set({ repositoryId: null }).where(eq(agents.id, agent.id))
     }
   }
 
-  // Get clone path before deleting the record
-  const repo = getRepository(id)
+  const repo = await getRepository(id)
   const clonePath = repo?.clonePath
 
-  drizzleDb.delete(repositories).where(eq(repositories.id, id)).run()
+  await db.delete(repositories).where(eq(repositories.id, id))
 
-  // Clean up on-disk clone
   if (clonePath) {
     try {
       fs.rmSync(clonePath, { recursive: true, force: true })
