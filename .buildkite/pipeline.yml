@@ -1,0 +1,105 @@
+# Buildkite pipeline for Conduit.
+#
+# Triggered on every push to master. Builds the linux/amd64 Docker image,
+# pushes it to ECR (tooling/conduit) with both the git SHA and `:master` as
+# tags, then rolls the deployment in the conduit namespace of the tooling
+# EKS cluster.
+#
+# Modeled on workspaces/apps/dovebot/.buildkite/cd.yml in the platform repo.
+#
+# Setup required (done once, via platform-side PRs):
+#   1. ECR repo `tooling/conduit` in the tooling AWS account
+#   2. OIDC / IAM role allowing the build-queue agent to push to ECR
+#   3. Buildkite pipeline registered against heydovetail/conduit
+#   4. infra/conduit-infra applied (cert, secret, IAM, RDS)
+#   5. kubectl apply -f infra/conduit-infra/k8s/ (one-time bootstrap)
+
+env:
+  ECR_REGISTRY: "360011608242.dkr.ecr.us-east-1.amazonaws.com"
+  ECR_REPO: "tooling/conduit"
+  AWS_REGION: "us-east-1"
+  IMAGE_PLATFORM: "linux/amd64"
+  K8S_NAMESPACE: "conduit"
+  K8S_DEPLOYMENT: "conduit-deployment"
+  EKS_CLUSTER: "eks-cluster-tooling-eksCluster-e09fcaf"
+
+steps:
+  # ── Build + push image ─────────────────────────────────────────────────────
+  - label: ":docker: build and push :ecr:"
+    key: build
+    agents:
+      queue: "ci-queue-public-arm"
+    command:
+      - 'echo "--- :docker: Configure buildx"'
+      - docker buildx create --use --name conduit-builder || docker buildx use conduit-builder
+      - 'echo "--- :aws-ecr: Login to ECR"'
+      - aws ecr get-login-password --region "$$AWS_REGION" | docker login --username AWS --password-stdin "$$ECR_REGISTRY"
+      - 'echo "--- :docker: Build linux/amd64 image"'
+      - >
+        docker buildx build
+        --platform "$$IMAGE_PLATFORM"
+        --tag "$$ECR_REGISTRY/$$ECR_REPO:$$BUILDKITE_COMMIT"
+        --tag "$$ECR_REGISTRY/$$ECR_REPO:master"
+        --cache-from "type=registry,ref=$$ECR_REGISTRY/$$ECR_REPO:buildcache"
+        --cache-to "type=registry,ref=$$ECR_REGISTRY/$$ECR_REPO:buildcache,mode=max"
+        --push
+        .
+    plugins:
+      - cultureamp/aws-assume-role#v0.1.0:
+          role: arn:aws:iam::360011608242:role/deployer
+    timeout_in_minutes: 20
+    retry:
+      automatic:
+        - exit_status: -1 # Connection to the Agent was lost
+          limit: 2
+        - exit_status: 255 # Spot termination
+          limit: 2
+
+  - wait
+
+  # ── Rollout to tooling cluster ─────────────────────────────────────────────
+  - label: ":kubernetes: Conduit deployment"
+    key: deploy
+    depends_on: build
+    agents:
+      queue: "root-deployment-queue-arm"
+    command:
+      - 'echo "--- :kubernetes: Installing kubectl"'
+      - curl -sLO "https://dl.k8s.io/release/$$(curl -s https://dl.k8s.io/release/stable.txt)/bin/linux/arm64/kubectl" && chmod +x kubectl && mv kubectl /usr/local/bin/
+      - 'echo "--- :key: Updating kubeconfig for EKS"'
+      - aws eks update-kubeconfig --region "$$AWS_REGION" --name "$$EKS_CLUSTER"
+      - 'echo "--- :kubernetes: Rollout deployment"'
+      - kubectl rollout restart deployment "$$K8S_DEPLOYMENT" --namespace "$$K8S_NAMESPACE"
+      - 'echo "+++ :kubernetes: Wait for successful rollout"'
+      - kubectl rollout status deployment "$$K8S_DEPLOYMENT" --namespace "$$K8S_NAMESPACE" --timeout=5m
+    plugins:
+      - cultureamp/aws-assume-role#v0.1.0:
+          role: arn:aws:iam::360011608242:role/deployer
+      - docker#v5.12.0:
+          platform: linux/arm64
+          propagate-environment: true
+          image: 360011608242.dkr.ecr.us-east-1.amazonaws.com/ci/amazon-linux:al-2023.7.20250609.0-node-20-yarn-4.14.1
+          shell:
+            - /bin/sh
+            - -ex
+            - -c
+          workdir: /app
+          mount-buildkite-agent: true
+          environment:
+            - AWS_ACCESS_KEY_ID
+            - AWS_SECRET_ACCESS_KEY
+            - AWS_SESSION_TOKEN
+            - AWS_REGION
+            - EKS_CLUSTER
+            - K8S_NAMESPACE
+            - K8S_DEPLOYMENT
+          pull-retries: 2
+    timeout_in_minutes: 10
+    retry:
+      automatic:
+        - exit_status: -1
+          limit: 2
+        - exit_status: 129
+          limit: 2
+        - exit_status: 255
+          limit: 2
