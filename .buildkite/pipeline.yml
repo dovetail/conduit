@@ -1,34 +1,31 @@
 # Buildkite pipeline for Conduit.
 #
 # Triggered on every push to master. Builds the linux/amd64 Docker image,
-# pushes it to ECR (tooling/conduit) with both the git SHA and `:master` as
-# tags, then rolls the deployment in the conduit namespace of the tooling
-# EKS cluster.
+# pushes it to ECR with both the git SHA and `:master` as tags, then rolls
+# the Kubernetes deployment in the target cluster.
 #
-# Modeled on workspaces/apps/dovebot/.buildkite/cd.yml in the platform repo.
-#
-# Setup required (done once, via platform-side PRs):
-#   1. ECR repo `tooling/conduit` in the tooling AWS account
-#   2. OIDC / IAM role allowing the build-queue agent to push to ECR
-#   3. Buildkite pipeline registered against heydovetail/conduit
-#   4. infra/conduit-infra applied (cert, secret, IAM, RDS)
-#   5. kubectl apply -f infra/conduit-infra/k8s/ (one-time bootstrap)
+# Infrastructure identifiers are provided via Buildkite pipeline-level env
+# vars (set in the BK pipeline UI), not committed here:
+#   ECR_REGISTRY      — ECR registry hostname
+#   ECR_REPO          — ECR repo name
+#   DEPLOY_ROLE_ARN   — IAM role assumed for ECR push + EKS access
+#   CI_BASE_IMAGE     — base image for the deploy step
+#   EKS_CLUSTER       — target EKS cluster name
+#   BUILD_QUEUE       — agent queue for the build step
+#   DEPLOY_QUEUE      — agent queue for the deploy step
 
 env:
-  ECR_REGISTRY: "360011608242.dkr.ecr.us-east-1.amazonaws.com"
-  ECR_REPO: "tooling/conduit"
   AWS_REGION: "us-east-1"
   IMAGE_PLATFORM: "linux/amd64"
   K8S_NAMESPACE: "conduit"
   K8S_DEPLOYMENT: "conduit-deployment"
-  EKS_CLUSTER: "eks-cluster-tooling-eksCluster-e09fcaf"
 
 steps:
   # ── Build + push image ─────────────────────────────────────────────────────
   - label: ":docker: build and push :ecr:"
     key: build
     agents:
-      queue: "ci-queue-public-arm"
+      queue: "$BUILD_QUEUE"
     command:
       - 'echo "--- :docker: Configure buildx"'
       - docker buildx create --use --name conduit-builder || docker buildx use conduit-builder
@@ -46,7 +43,7 @@ steps:
         .
     plugins:
       - cultureamp/aws-assume-role#v0.1.0:
-          role: arn:aws:iam::360011608242:role/deployer
+          role: "$DEPLOY_ROLE_ARN"
     timeout_in_minutes: 20
     retry:
       automatic:
@@ -57,12 +54,12 @@ steps:
 
   - wait
 
-  # ── Rollout to tooling cluster ─────────────────────────────────────────────
+  # ── Rollout to target cluster ──────────────────────────────────────────────
   - label: ":kubernetes: Conduit deployment"
     key: deploy
     depends_on: build
     agents:
-      queue: "root-deployment-queue-arm"
+      queue: "$DEPLOY_QUEUE"
     command:
       - 'echo "--- :kubernetes: Installing kubectl"'
       - curl -sLO "https://dl.k8s.io/release/$$(curl -s https://dl.k8s.io/release/stable.txt)/bin/linux/arm64/kubectl" && chmod +x kubectl && mv kubectl /usr/local/bin/
@@ -74,11 +71,11 @@ steps:
       - kubectl rollout status deployment "$$K8S_DEPLOYMENT" --namespace "$$K8S_NAMESPACE" --timeout=5m
     plugins:
       - cultureamp/aws-assume-role#v0.1.0:
-          role: arn:aws:iam::360011608242:role/deployer
+          role: "$DEPLOY_ROLE_ARN"
       - docker#v5.12.0:
           platform: linux/arm64
           propagate-environment: true
-          image: 360011608242.dkr.ecr.us-east-1.amazonaws.com/ci/amazon-linux:al-2023.7.20250609.0-node-20-yarn-4.14.1
+          image: "$CI_BASE_IMAGE"
           shell:
             - /bin/sh
             - -ex
