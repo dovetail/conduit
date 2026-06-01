@@ -46,7 +46,11 @@ async function bootstrapConduit(): Promise<void> {
   if (window.conduit) return // Already set by Electron preload
 
   const { createWsConduitClient } = await import('./lib/ws-client')
-  const wsUrl = `ws://${window.location.host}/ws`
+  // Match the page's protocol — Firefox throws "The operation is insecure"
+  // and Chrome throws "Mixed Content" when a secure origin opens a ws://
+  // connection. When served over HTTPS we must use wss://.
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const wsUrl = `${wsProtocol}//${window.location.host}/ws`
   window.conduit = createWsConduitClient(wsUrl)
 
   await Promise.resolve()
