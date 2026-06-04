@@ -8,7 +8,9 @@ WORKDIR /app
 # Fetched here so the certificate becomes part of the build cache, and so the
 # build fails cleanly if AWS ever takes the URL down — rather than failing at
 # pod startup. Validated on first DB connect via tls.rejectUnauthorized.
-ADD https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /tmp/global-bundle.pem
+# --chmod=644: ADD'ed URLs default to 600 root:root, which survives the cp +
+# COPY --from=builder into the prod stage and is unreadable by `USER node`.
+ADD --chmod=644 https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /tmp/global-bundle.pem
 
 COPY package*.json ./
 RUN npm ci
