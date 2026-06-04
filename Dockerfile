@@ -3,6 +3,13 @@ FROM node:22-slim AS builder
 
 WORKDIR /app
 
+# AWS RDS CA bundle for IAM-auth Postgres connections.
+# https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.SSL.html
+# Fetched here so the certificate becomes part of the build cache, and so the
+# build fails cleanly if AWS ever takes the URL down — rather than failing at
+# pod startup. Validated on first DB connect via tls.rejectUnauthorized.
+ADD https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /tmp/global-bundle.pem
+
 COPY package*.json ./
 RUN npm ci
 
@@ -10,6 +17,10 @@ COPY . .
 
 # Build renderer (out/renderer/) + server JS (out/server/)
 RUN npm run build
+
+# Place the RDS CA bundle next to the compiled DB module so `path.join(
+# __dirname, 'global-bundle.pem')` finds it in `out/main/db/`.
+RUN cp /tmp/global-bundle.pem out/main/db/global-bundle.pem
 
 # ─── Production stage ────────────────────────────────────────────────────────
 FROM node:22-slim
@@ -31,7 +42,9 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=builder /app/out ./out
 
 # /data is the persistent volume for run logs and bare git clones.
-# The Postgres database lives in RDS (see DATABASE_URL).
+# The Postgres database lives in RDS. In production / staging the pod uses
+# IAM auth (DATABASE_USE_RDS_IAM=true + DATABASE_HOST/PORT/NAME/USER); local
+# dev uses DATABASE_URL against the docker-compose Postgres.
 VOLUME /data
 ENV CONDUIT_DATA_DIR=/data
 ENV PORT=7456
