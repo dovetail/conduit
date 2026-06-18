@@ -121,7 +121,11 @@ export async function startRunServer(
   const logStream = fs.createWriteStream(realLogPath, { flags: 'a', encoding: 'utf8' })
 
   function writeLogEntry(entry: LogEntry): void {
-    logStream.write(JSON.stringify(entry) + '\n')
+    const line = JSON.stringify(entry)
+    // Write to per-run log file (for UI replay via runs:getLog).
+    logStream.write(line + '\n')
+    // Also emit to stdout so the platform log forwarder (Datadog, etc.) ingests.
+    process.stdout.write(JSON.stringify({ runId, agentId, ...entry }) + '\n')
   }
 
   function emitSystemMessage(chunk: string): void {
@@ -198,19 +202,17 @@ export async function startRunServer(
       durationMs,
       exitCode: exitCode ?? undefined,
     })
-
-    broadcast('run:statusChange', {
-      runId,
-      status,
-      exitCode: exitCode ?? undefined,
-      endedAt,
-      durationMs,
-    })
-
-    // Publish to configured targets (fire-and-forget)
-    publishRunResult(agentId, finalRun).catch((err) =>
-      console.error(`[server/runner] Publish failed for run ${runId}:`, err)
-    )
+      .then((finalRun) => {
+        broadcast('run:statusChange', {
+          runId,
+          status,
+          exitCode: exitCode ?? undefined,
+          endedAt,
+          durationMs,
+        })
+        return publishRunResult(agentId, finalRun)
+      })
+      .catch((err) => console.error(`[server/runner] Finalize failed for run ${runId}:`, err))
   }
 
   // 6. Spawn process based on runner type
@@ -226,7 +228,7 @@ export async function startRunServer(
     } catch (err) {
       cleanupRun(runId, workspacePath, isEphemeral, worktreeClonePath)
       logStream.end()
-      updateRun(runId, { status: 'failed', endedAt: Date.now() })
+      await updateRun(runId, { status: 'failed', endedAt: Date.now() })
       broadcast('run:statusChange', { runId, status: 'failed' })
       throw err
     }

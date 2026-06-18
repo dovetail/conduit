@@ -9,7 +9,6 @@ import type { RepoSyncStatus } from '../shared/types'
 
 /**
  * Background service that keeps repository clones up-to-date.
- * Runs periodic fetches and handles initial clones for new repos.
  */
 export class RepoSyncService {
   private intervalId: NodeJS.Timeout | null = null
@@ -20,13 +19,14 @@ export class RepoSyncService {
     this.broadcast = broadcast
   }
 
-  /** Start the sync loop. Runs an initial sync immediately, then on interval. */
   start(intervalMs: number = 5 * 60 * 1000): void {
     this.cleanupStaleWorktrees().catch((err) =>
       console.error('[repoSync] Failed to clean up stale worktrees:', err)
     )
-    this.syncAll()
-    this.intervalId = setInterval(() => this.syncAll(), intervalMs)
+    this.syncAll().catch((err) => console.error('[repoSync] Initial sync failed:', err))
+    this.intervalId = setInterval(() => {
+      this.syncAll().catch((err) => console.error('[repoSync] Periodic sync failed:', err))
+    }, intervalMs)
   }
 
   stop(): void {
@@ -36,23 +36,19 @@ export class RepoSyncService {
     }
   }
 
-  /** Sync all repositories. */
   async syncAll(): Promise<void> {
     const repos = await listRepositories(DEV_CONTEXT.userId, DEV_CONTEXT.userGroupIds)
     for (const repo of repos) {
-      // Fire-and-forget each repo sync so one failure doesn't block others
       this.syncRepo(repo.id).catch((err) =>
         console.error(`[repoSync] Unexpected error syncing repo ${repo.id}:`, err)
       )
     }
   }
 
-  /** Manually trigger a sync for a single repo. */
   async triggerSync(repoId: string): Promise<void> {
     await this.syncRepo(repoId)
   }
 
-  /** Sync a single repository (clone if pending, fetch if ready). */
   async syncRepo(repoId: string): Promise<void> {
     if (this.syncInProgress.has(repoId)) return
     this.syncInProgress.add(repoId)

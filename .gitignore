@@ -25,6 +25,7 @@ release/
 
 # Git worktrees
 .worktrees/
+.claude/worktrees/
 
 # Superpowers brainstorm sessions
 .superpowers/

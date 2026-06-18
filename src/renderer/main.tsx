@@ -1,9 +1,36 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import * as Sentry from '@sentry/react'
 import { AuthProvider } from './contexts/AuthContext'
 import App from './App'
 import './styles/globals.css'
+
+interface RuntimeConfig {
+  sentryDsn: string | null
+  sentryEnvironment: string | null
+  sentryRelease: string | null
+}
+
+async function loadRuntimeConfig(): Promise<RuntimeConfig> {
+  try {
+    const res = await fetch('/api/runtime-config', { credentials: 'same-origin' })
+    if (!res.ok) return { sentryDsn: null, sentryEnvironment: null, sentryRelease: null }
+    return (await res.json()) as RuntimeConfig
+  } catch {
+    return { sentryDsn: null, sentryEnvironment: null, sentryRelease: null }
+  }
+}
+
+function initSentry(config: RuntimeConfig): void {
+  if (!config.sentryDsn) return
+  Sentry.init({
+    dsn: config.sentryDsn,
+    environment: config.sentryEnvironment ?? undefined,
+    release: config.sentryRelease ?? undefined,
+    tracesSampleRate: 0,
+  })
+}
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -15,21 +42,18 @@ const queryClient = new QueryClient({
   },
 })
 
-// ─── WebSocket / browser mode bootstrap ───────────────────────────────────────
-// When running in Docker / browser mode the Electron preload script is absent,
-// so window.conduit is undefined. Inject a WebSocket-backed polyfill before
-// React mounts so that all consumers of window.conduit work identically.
 async function bootstrapConduit(): Promise<void> {
   if (typeof window === 'undefined') return
   if (window.conduit) return // Already set by Electron preload
 
   const { createWsConduitClient } = await import('./lib/ws-client')
-  const wsUrl = `ws://${window.location.host}/ws`
+  // Match the page's protocol — Firefox throws "The operation is insecure"
+  // and Chrome throws "Mixed Content" when a secure origin opens a ws://
+  // connection. When served over HTTPS we must use wss://.
+  const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const wsUrl = `${wsProtocol}//${window.location.host}/ws`
   window.conduit = createWsConduitClient(wsUrl)
 
-  // The ws-client queues messages sent before the connection opens, so React
-  // can mount immediately. We yield here just to let the event loop process
-  // any synchronous setup before first render.
   await Promise.resolve()
 }
 
@@ -48,6 +72,7 @@ class ErrorBoundary extends React.Component<
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     console.error('Conduit renderer error:', error, info)
+    Sentry.captureException(error, { extra: { componentStack: info.componentStack } })
   }
 
   render() {
@@ -104,9 +129,10 @@ class ErrorBoundary extends React.Component<
   }
 }
 
-// Async IIFE: initialise the conduit backend (WebSocket or Electron preload)
-// before mounting React so all components can access window.conduit safely.
 ;(async () => {
+  const config = await loadRuntimeConfig()
+  initSentry(config)
+
   await bootstrapConduit()
 
   const root = document.getElementById('root')

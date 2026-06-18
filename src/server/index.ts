@@ -1,3 +1,15 @@
+import * as Sentry from '@sentry/node'
+
+// Initialise Sentry as early as possible so it captures startup errors.
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV ?? 'production',
+    release: process.env.SENTRY_RELEASE ?? process.env.GIT_SHA,
+    tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? 0),
+  })
+}
+
 import express from 'express'
 import cookieParser from 'cookie-parser'
 import { createServer } from 'http'
@@ -41,7 +53,7 @@ import {
 import { TriggerService } from './triggers/triggerService'
 import { createTriggerRoutes } from './triggers/triggerRoutes'
 import { listMcpTools } from './mcpTools'
-import { getGithubPat, setGithubPat, serverStoreGet, serverStoreSet } from './store'
+import { getGithubPat } from './store'
 import { readLogFile } from './utils'
 import { Octokit } from '@octokit/rest'
 import { createSession, sendMessageServer, closeSession } from './promptChatServer'
@@ -62,7 +74,6 @@ import type {
   PublishTarget,
   Repository,
   RunnerType,
-  SlackPublishConfig,
   Trigger,
   RequestContext,
   ShareableEntityType,
@@ -71,21 +82,31 @@ import type {
 const PORT = process.env.PORT || 7456
 
 const DATA_DIR = process.env.CONDUIT_DATA_DIR ?? path.join(os.homedir(), '.conduit')
-// Ensure it exists
 fs.mkdirSync(DATA_DIR, { recursive: true })
 
 const app = express()
 const httpServer = createServer(app)
 
-// WebSocket server — not attached directly to httpServer so we can restrict
-// upgrades to the /ws path only.
 const wss = new WebSocketServer({ noServer: true })
 
-// Serve the built renderer static files.
-// Use process.cwd() so this resolves correctly whether running via:
-//   - tsx src/server/index.ts  (__dirname = src/server/)
-//   - node out/server/index.js (__dirname = out/server/)
 const RENDERER_DIR = path.join(process.cwd(), 'out', 'renderer')
+
+// ─── Health ───────────────────────────────────────────────────────────────────
+// Registered before any other middleware so the probe never blocks on
+// IP restrictions or DB connectivity issues.
+app.get('/health', (_req, res) => {
+  res.status(200).json({ status: 'ok' })
+})
+
+// Runtime config exposed to the browser (read at app boot).
+// Lets the renderer initialise Sentry without baking the DSN into the bundle.
+app.get('/api/runtime-config', (_req, res) => {
+  res.status(200).json({
+    sentryDsn: process.env.SENTRY_DSN ?? null,
+    sentryEnvironment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV ?? null,
+    sentryRelease: process.env.SENTRY_RELEASE ?? process.env.GIT_SHA ?? null,
+  })
+})
 
 // ─── IP Restrictions ──────────────────────────────────────────────────────────
 
@@ -104,10 +125,6 @@ app.use('/auth', authRoutes)
 app.use(sessionMiddleware)
 
 app.use(express.static(RENDERER_DIR))
-// SPA fallback — all non-API routes serve index.html
-app.get('*', (_req, res) => {
-  res.sendFile(path.join(RENDERER_DIR, 'index.html'))
-})
 
 // ─── Active clients ───────────────────────────────────────────────────────────
 
@@ -126,10 +143,13 @@ function broadcast(channel: string, payload: unknown): void {
 
 const triggerService = new TriggerService(broadcast)
 
-// Inbound trigger HTTP endpoints (must be registered before SPA catch-all but after triggerService)
-// Express registers middleware in order, and our catch-all is app.get('*') which only matches GET,
-// so POST routes registered here will work correctly.
+// Inbound trigger HTTP endpoints. Registered before SPA catch-all but after triggerService.
 app.use('/api/triggers', express.json({ limit: '1mb' }), createTriggerRoutes(triggerService))
+
+// SPA fallback — all other GETs serve index.html
+app.get('*', (_req, res) => {
+  res.sendFile(path.join(RENDERER_DIR, 'index.html'))
+})
 
 // ─── Channel handlers ─────────────────────────────────────────────────────────
 
@@ -212,13 +232,13 @@ const handlers: Record<string, HandlerFn> = {
       }
     }
 
-    // stdio type — check whether the command binary is available
     const command = config.command ?? ''
     if (!command) return { status: 'unhealthy', message: 'No command configured' }
 
     try {
-      const { execSync } = await import('child_process')
-      execSync(`which ${command}`, { stdio: 'ignore' })
+      const { execFileSync } = await import('child_process')
+      // execFile (not exec) avoids shell interpretation of `command`.
+      execFileSync('which', [command], { stdio: 'ignore' })
       return { status: 'healthy', message: `${command} found in PATH` }
     } catch {
       return { status: 'unhealthy', message: `${command} not found in PATH` }
@@ -237,7 +257,6 @@ const handlers: Record<string, HandlerFn> = {
       data as Omit<Repository, 'id' | 'createdAt' | 'updatedAt' | 'syncStatus' | 'clonePath'>,
       ctx.userId
     )
-    // Trigger initial clone asynchronously
     repoSyncService.triggerSync(repo.id).catch((err) =>
       console.error(`[server] Initial sync failed for repo ${repo.id}:`, err)
     )
@@ -303,7 +322,10 @@ const handlers: Record<string, HandlerFn> = {
     return Promise.resolve()
   },
   'publishTargets:test': ([type, config]) =>
-    testPublishTarget(type as import('../shared/types').PublishTargetType, config as import('../shared/types').PublishConfig),
+    testPublishTarget(
+      type as import('../shared/types').PublishTargetType,
+      config as import('../shared/types').PublishConfig
+    ),
 
   // Triggers
   'triggers:list': async ([agentId], _ws, ctx) => {
@@ -338,7 +360,7 @@ const handlers: Record<string, HandlerFn> = {
   // Gist
   'gist:save': async ([content, gistId]) => {
     const pat = getGithubPat()
-    if (!pat) throw new Error('GitHub PAT not configured')
+    if (!pat) throw new Error('GitHub PAT not configured (set GITHUB_PAT env var)')
     const octokit = new Octokit({ auth: pat })
 
     if (gistId) {
@@ -359,7 +381,7 @@ const handlers: Record<string, HandlerFn> = {
 
   'gist:list': async () => {
     const pat = getGithubPat()
-    if (!pat) throw new Error('GitHub PAT not configured')
+    if (!pat) throw new Error('GitHub PAT not configured (set GITHUB_PAT env var)')
     const octokit = new Octokit({ auth: pat })
     const response = await octokit.gists.list({ per_page: 100 })
     return response.data.map((g) => ({
@@ -381,7 +403,7 @@ const handlers: Record<string, HandlerFn> = {
 
   'gist:load': async ([gistId]) => {
     const pat = getGithubPat()
-    if (!pat) throw new Error('GitHub PAT not configured')
+    if (!pat) throw new Error('GitHub PAT not configured (set GITHUB_PAT env var)')
     const octokit = new Octokit({ auth: pat })
 
     const response = await octokit.gists.get({ gist_id: gistId as string })
@@ -394,31 +416,23 @@ const handlers: Record<string, HandlerFn> = {
     return file.content ?? ''
   },
 
-  // Preferences — special-case githubPat to use the server store's PAT helpers
+  // Preferences — read-only via env vars in server mode.
   'prefs:get': ([key]) => {
-    if (key === 'githubPat') {
-      return Promise.resolve(getGithubPat())
-    }
-    return Promise.resolve(serverStoreGet(key as string))
+    if (key === 'githubPat') return Promise.resolve(getGithubPat() ?? null)
+    return Promise.resolve(null)
   },
-  'prefs:set': ([key, value]) => {
-    if (key === 'githubPat') {
-      if (typeof value === 'string') setGithubPat(value)
-    } else {
-      serverStoreSet(key as string, value)
-    }
-    return Promise.resolve()
+  'prefs:set': () => {
+    throw new Error(
+      'prefs:set is disabled in server mode — configure secrets via environment variables (e.g. via ESO + AWS Secrets Manager).'
+    )
   },
 
-  // Shell — cannot open a browser from the server; return the URL so the client
-  // can handle it (the ws-client polyfill calls window.open directly anyway).
   'shell:openExternal': ([url]) => Promise.resolve({ url }),
 
   // Prompt Chat
   'promptChat:start': ([agentId, runner]) =>
     createSession(agentId as string, runner as RunnerType),
   'promptChat:send': ([sessionId, message], ws) => {
-    // We need a per-client broadcast so only this ws receives the streaming events
     function clientBroadcast(channel: string, payload: unknown): void {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'event', channel, payload }))
@@ -494,7 +508,7 @@ wss.on('connection', (ws, req) => {
     try {
       msg = JSON.parse(raw.toString())
     } catch {
-      return // Ignore malformed frames
+      return
     }
 
     if (msg.type !== 'invoke') return
@@ -502,11 +516,7 @@ wss.on('connection', (ws, req) => {
     const handler = handlers[msg.channel]
     if (!handler) {
       ws.send(
-        JSON.stringify({
-          type: 'error',
-          id: msg.id,
-          error: `Unknown channel: ${msg.channel}`,
-        })
+        JSON.stringify({ type: 'error', id: msg.id, error: `Unknown channel: ${msg.channel}` })
       )
       return
     }
@@ -518,6 +528,7 @@ wss.on('connection', (ws, req) => {
       const result = await handler(msg.args ?? [], ws, context)
       ws.send(JSON.stringify({ type: 'response', id: msg.id, result }))
     } catch (err: unknown) {
+      if (process.env.SENTRY_DSN) Sentry.captureException(err)
       const message = err instanceof Error ? err.message : String(err)
       ws.send(JSON.stringify({ type: 'error', id: msg.id, error: message }))
     }
@@ -531,7 +542,10 @@ wss.on('connection', (ws, req) => {
 // Only upgrade /ws path to WebSocket — leave all other HTTP routes alone
 httpServer.on('upgrade', async (req, socket, head) => {
   if (req.url === '/ws') {
-    const clientIp = extractClientIp(req.socket.remoteAddress, req.headers as any)
+    const clientIp = extractClientIp(
+      req.socket.remoteAddress,
+      req.headers as Record<string, string | string[] | undefined>
+    )
     if (!isIpAllowed(clientIp, ipConfig)) {
       console.warn(`[conduit] Blocked WebSocket from ${clientIp}`)
       socket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
@@ -633,9 +647,27 @@ async function start(): Promise<void> {
   httpServer.listen(PORT, () => {
     console.log(`Conduit server running at http://localhost:${PORT}`)
   })
+
+  // Graceful shutdown. K8s sends SIGTERM and waits up to
+  // terminationGracePeriodSeconds (default 30s) before SIGKILL.
+  let shuttingDown = false
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return
+    shuttingDown = true
+    console.log(`[server] Received ${signal}, draining…`)
+    httpServer.close(() => console.log('[server] HTTP server closed'))
+    for (const ws of clients) ws.close(1001, 'Server shutting down')
+    triggerService.stop()
+    repoSyncService.stop()
+    // Give in-flight requests up to 10s to finish, then exit.
+    setTimeout(() => process.exit(0), 10_000).unref()
+  }
+  process.on('SIGTERM', () => shutdown('SIGTERM'))
+  process.on('SIGINT', () => shutdown('SIGINT'))
 }
 
 start().catch((err) => {
   console.error('[server] Startup failed:', err)
+  if (process.env.SENTRY_DSN) Sentry.captureException(err)
   process.exit(1)
 })

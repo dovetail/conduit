@@ -48,10 +48,6 @@ export async function injectOAuthTokens(config: McpServersConfig): Promise<McpSe
   return { mcpServers: updated }
 }
 
-/**
- * Expands ${VAR_NAME} placeholders in MCP server config strings using process.env.
- * Applies to env values and args strings. Unset variables are left as-is.
- */
 function expandEnvVars(value: string): string {
   return value.replace(/\$\{([^}]+)\}/g, (match, name) => process.env[name] ?? match)
 }
@@ -89,9 +85,6 @@ export async function writeMcpConfig(runId: string, config: McpServersConfig): P
   return filePath
 }
 
-/**
- * Deletes the MCP config file for a given run. Silently ignores errors.
- */
 export function deleteMcpConfig(runId: string): void {
   const filePath = path.join(os.tmpdir(), `conduit-mcp-${runId}.json`)
   try {

@@ -3,14 +3,14 @@
   "version": "0.1.0",
   "description": "A managed execution environment for AI CLI agents",
   "author": {
-    "name": "Doug Rathbone",
-    "email": "dougrathbone@gmail.com"
+    "name": "Dovetail",
+    "email": "releasebot@dovetailapp.com"
   },
   "license": "MIT",
-  "homepage": "https://github.com/dougrathbone/conduit",
+  "homepage": "https://github.com/heydovetail/conduit",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dougrathbone/conduit.git"
+    "url": "https://github.com/heydovetail/conduit.git"
   },
   "scripts": {
     "dev": "concurrently --names \"ui,server\" --prefix-colors \"cyan,magenta\" \"vite build --watch --config vite.server.config.ts\" \"tsx watch src/server/index.ts\"",
@@ -20,7 +20,8 @@
     "docker:run": "docker run -p 7456:7456 conduit",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "lint": "eslint . --ext .ts,.tsx --report-unused-disable-directives",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
+    "db:generate": "drizzle-kit generate",
     "seed": "tsx scripts/seed-global-mcps.ts",
     "db:up": "podman run -d --name conduit-pg -e POSTGRES_USER=conduit -e POSTGRES_PASSWORD=conduit -e POSTGRES_DB=conduit -p 5432:5432 -v conduit-pg:/var/lib/postgresql/data docker.io/library/postgres:16-alpine",
     "db:down": "podman rm -f conduit-pg",
@@ -32,6 +33,8 @@
     "@codemirror/lang-json": "^6.0.1",
     "@codemirror/theme-one-dark": "^6.1.2",
     "@octokit/rest": "^21.0.2",
+    "@sentry/node": "^8.45.0",
+    "@sentry/react": "^8.45.0",
     "@tanstack/react-query": "^5.62.16",
     "@uiw/react-codemirror": "^4.23.7",
     "@xterm/addon-fit": "^0.10.0",
@@ -52,7 +55,7 @@
     "react-dom": "^18.3.1",
     "react-resizable-panels": "^2.1.7",
     "tailwind-merge": "^2.6.0",
-    "ws": "^8.18.0",
+    "ws": "^8.20.1",
     "zustand": "^5.0.3"
   },
   "devDependencies": {

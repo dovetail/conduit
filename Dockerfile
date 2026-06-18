@@ -3,44 +3,58 @@ FROM node:22-slim AS builder
 
 WORKDIR /app
 
-# Install build tools for native modules (better-sqlite3)
-RUN apt-get update && \
-    apt-get install -y python3 make g++ && \
-    rm -rf /var/lib/apt/lists/*
+# AWS RDS CA bundle for IAM-auth Postgres connections.
+# https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.SSL.html
+# Fetched here so the certificate becomes part of the build cache, and so the
+# build fails cleanly if AWS ever takes the URL down — rather than failing at
+# pod startup. Validated on first DB connect via tls.rejectUnauthorized.
+# --chmod=644: ADD'ed URLs default to 600 root:root, which survives the cp +
+# COPY --from=builder into the prod stage and is unreadable by `USER node`.
+ADD --chmod=644 https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /tmp/global-bundle.pem
 
 COPY package*.json ./
 RUN npm ci
 
 COPY . .
 
-# Build React renderer → out/renderer/
-RUN npx vite build --config vite.server.config.ts
+# Build renderer (out/renderer/) + server JS (out/server/)
+RUN npm run build
+
+# Place the RDS CA bundle next to the compiled DB module so `path.join(
+# __dirname, 'global-bundle.pem')` finds it in `out/main/db/`.
+RUN cp /tmp/global-bundle.pem out/main/db/global-bundle.pem
 
 # ─── Production stage ────────────────────────────────────────────────────────
 FROM node:22-slim
 
 WORKDIR /app
 
-# Build tools for better-sqlite3 native module
+# git is required at runtime for repository sync (clone/fetch/worktree).
+# No PID-1 wrapper (tini/dumb-init): Node 22 receives signals correctly when
+# used as PID 1 with an exec-form ENTRYPOINT, and the server installs its
+# own SIGTERM/SIGINT handlers for graceful shutdown.
 RUN apt-get update && \
-    apt-get install -y python3 make g++ && \
+    apt-get install -y --no-install-recommends git ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
-RUN npm ci
+RUN npm ci --omit=dev && npm cache clean --force
 
-# Copy TypeScript source (tsx runs TS directly — no separate compile step)
-COPY src ./src
-COPY tsconfig*.json ./
+# Compiled JS only — no TS source / tsx runtime in the image.
+COPY --from=builder /app/out ./out
 
-# Copy built frontend from builder
-COPY --from=builder /app/out/renderer ./out/renderer
-
-# /data is the persistent volume for the SQLite DB, logs, and prefs
+# /data is the persistent volume for run logs and bare git clones.
+# The Postgres database lives in RDS. In production / staging the pod uses
+# IAM auth (DATABASE_USE_RDS_IAM=true + DATABASE_HOST/PORT/NAME/USER); local
+# dev uses DATABASE_URL against the docker-compose Postgres.
 VOLUME /data
 ENV CONDUIT_DATA_DIR=/data
 ENV PORT=7456
+ENV NODE_ENV=production
 
 EXPOSE 7456
 
-CMD ["npx", "tsx", "src/server/index.ts"]
+# Run an unprivileged user. The `node` user is provided by the official image.
+USER node
+
+ENTRYPOINT ["node", "out/server/index.js"]

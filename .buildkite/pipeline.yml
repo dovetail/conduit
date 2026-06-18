@@ -1,0 +1,102 @@
+# Buildkite pipeline for Conduit.
+#
+# Triggered on every push to master. Builds the linux/amd64 Docker image,
+# pushes it to ECR with both the git SHA and `:master` as tags, then rolls
+# the Kubernetes deployment in the target cluster.
+#
+# Infrastructure identifiers are provided via Buildkite pipeline-level env
+# vars (set in the BK pipeline UI), not committed here:
+#   ECR_REGISTRY      — ECR registry hostname
+#   ECR_REPO          — ECR repo name
+#   DEPLOY_ROLE_ARN   — IAM role assumed for ECR push + EKS access
+#   CI_BASE_IMAGE     — base image for the deploy step
+#   EKS_CLUSTER       — target EKS cluster name
+#   BUILD_QUEUE       — agent queue for the build step
+#   DEPLOY_QUEUE      — agent queue for the deploy step
+
+env:
+  AWS_REGION: "us-east-1"
+  IMAGE_PLATFORM: "linux/amd64"
+  K8S_NAMESPACE: "conduit"
+  K8S_DEPLOYMENT: "conduit-deployment"
+
+steps:
+  # ── Build + push image ─────────────────────────────────────────────────────
+  - label: ":docker: build and push :ecr:"
+    key: build
+    agents:
+      queue: "$BUILD_QUEUE"
+    command:
+      - 'echo "--- :docker: Configure buildx"'
+      - docker buildx create --use --name conduit-builder || docker buildx use conduit-builder
+      - 'echo "--- :aws-ecr: Login to ECR"'
+      - aws ecr get-login-password --region "$$AWS_REGION" | docker login --username AWS --password-stdin "$$ECR_REGISTRY"
+      - 'echo "--- :docker: Build linux/amd64 image"'
+      - >
+        docker buildx build
+        --platform "$$IMAGE_PLATFORM"
+        --tag "$$ECR_REGISTRY/$$ECR_REPO:$$BUILDKITE_COMMIT"
+        --tag "$$ECR_REGISTRY/$$ECR_REPO:master"
+        --cache-from "type=registry,ref=$$ECR_REGISTRY/$$ECR_REPO:buildcache"
+        --cache-to "type=registry,ref=$$ECR_REGISTRY/$$ECR_REPO:buildcache,mode=max"
+        --push
+        .
+    plugins:
+      - cultureamp/aws-assume-role#v0.1.0:
+          role: "$DEPLOY_ROLE_ARN"
+    timeout_in_minutes: 20
+    retry:
+      automatic:
+        - exit_status: -1 # Connection to the Agent was lost
+          limit: 2
+        - exit_status: 255 # Spot termination
+          limit: 2
+
+  - wait
+
+  # ── Rollout to target cluster ──────────────────────────────────────────────
+  - label: ":kubernetes: Conduit deployment"
+    key: deploy
+    depends_on: build
+    agents:
+      queue: "$DEPLOY_QUEUE"
+    command:
+      - 'echo "--- :kubernetes: Installing kubectl"'
+      - curl -sLO "https://dl.k8s.io/release/$$(curl -s https://dl.k8s.io/release/stable.txt)/bin/linux/arm64/kubectl" && chmod +x kubectl && mv kubectl /usr/local/bin/
+      - 'echo "--- :key: Updating kubeconfig for EKS"'
+      - aws eks update-kubeconfig --region "$$AWS_REGION" --name "$$EKS_CLUSTER"
+      - 'echo "--- :kubernetes: Rollout deployment"'
+      - kubectl rollout restart deployment "$$K8S_DEPLOYMENT" --namespace "$$K8S_NAMESPACE"
+      - 'echo "+++ :kubernetes: Wait for successful rollout"'
+      - kubectl rollout status deployment "$$K8S_DEPLOYMENT" --namespace "$$K8S_NAMESPACE" --timeout=5m
+    plugins:
+      - cultureamp/aws-assume-role#v0.1.0:
+          role: "$DEPLOY_ROLE_ARN"
+      - docker#v5.12.0:
+          platform: linux/arm64
+          propagate-environment: true
+          image: "$CI_BASE_IMAGE"
+          shell:
+            - /bin/sh
+            - -ex
+            - -c
+          workdir: /app
+          mount-buildkite-agent: true
+          environment:
+            - AWS_ACCESS_KEY_ID
+            - AWS_SECRET_ACCESS_KEY
+            - AWS_SESSION_TOKEN
+            - AWS_REGION
+            - EKS_CLUSTER
+            - K8S_NAMESPACE
+            - K8S_DEPLOYMENT
+          pull-retries: 2
+    timeout_in_minutes: 10
+    retry:
+      automatic:
+        - exit_status: -1
+          limit: 2
+        - exit_status: 129
+          limit: 2
+        - exit_status: 255
+          limit: 2
