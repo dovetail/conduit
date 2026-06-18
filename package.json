@@ -24,8 +24,7 @@
     "seed": "tsx scripts/seed-global-mcps.ts",
     "db:up": "podman run -d --name conduit-pg -e POSTGRES_USER=conduit -e POSTGRES_PASSWORD=conduit -e POSTGRES_DB=conduit -p 5432:5432 -v conduit-pg:/var/lib/postgresql/data docker.io/library/postgres:16-alpine",
     "db:down": "podman rm -f conduit-pg",
-    "db:logs": "podman logs -f conduit-pg",
-    "db:migrate-sqlite": "tsx scripts/migrate-sqlite-to-pg.ts"
+    "db:logs": "podman logs -f conduit-pg"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.85.0",
@@ -57,7 +56,6 @@
     "zustand": "^5.0.3"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
     "@types/cookie-parser": "^1.4.10",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.7",
@@ -67,7 +65,6 @@
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@types/ws": "^8.5.13",
-    "better-sqlite3": "^11.7.0",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.2.1",
