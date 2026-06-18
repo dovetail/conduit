@@ -1,8 +1,8 @@
 import { eq, lt } from 'drizzle-orm'
-import { drizzleDb } from '../index'
+import { getDb } from '../index'
 import { sessions } from '../schema'
 
-export function createSession(data: {
+export async function createSession(data: {
   userId: string
   accessToken: string
   refreshToken?: string
@@ -11,41 +11,45 @@ export function createSession(data: {
   const id = crypto.randomUUID()
   const now = Date.now()
 
-  drizzleDb.insert(sessions).values({
+  await getDb().insert(sessions).values({
     id,
     userId: data.userId,
     accessToken: data.accessToken,
     refreshToken: data.refreshToken ?? null,
     expiresAt: data.expiresAt,
     createdAt: now,
-  }).run()
+  })
 
-  const row = drizzleDb.select().from(sessions).where(eq(sessions.id, id)).get()
-  if (!row) throw new Error(`Failed to create session with id ${id}`)
-  return row
+  const rows = await getDb().select().from(sessions).where(eq(sessions.id, id))
+  if (rows.length === 0) throw new Error(`Failed to create session with id ${id}`)
+  return rows[0]
 }
 
-export function getSession(id: string) {
-  return drizzleDb.select().from(sessions).where(eq(sessions.id, id)).get() ?? null
+export async function getSession(id: string) {
+  const rows = await getDb().select().from(sessions).where(eq(sessions.id, id))
+  return rows[0] ?? null
 }
 
-export function deleteSession(id: string) {
-  drizzleDb.delete(sessions).where(eq(sessions.id, id)).run()
+export async function deleteSession(id: string): Promise<void> {
+  await getDb().delete(sessions).where(eq(sessions.id, id))
 }
 
-export function deleteExpiredSessions(): number {
+export async function deleteExpiredSessions(): Promise<number> {
   const now = Date.now()
-  const result = drizzleDb.delete(sessions).where(lt(sessions.expiresAt, now)).run()
-  return result.changes
+  const deleted = await getDb()
+    .delete(sessions)
+    .where(lt(sessions.expiresAt, now))
+    .returning({ id: sessions.id })
+  return deleted.length
 }
 
-export function updateSessionTokens(
+export async function updateSessionTokens(
   id: string,
   data: { accessToken: string; refreshToken?: string; expiresAt: number }
-) {
-  drizzleDb.update(sessions).set({
+): Promise<void> {
+  await getDb().update(sessions).set({
     accessToken: data.accessToken,
     refreshToken: data.refreshToken ?? null,
     expiresAt: data.expiresAt,
-  }).where(eq(sessions.id, id)).run()
+  }).where(eq(sessions.id, id))
 }

@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm'
-import { drizzleDb } from '../index'
+import { getDb } from '../index'
 import { groups, userGroups } from '../schema'
 import type { Group } from '../../../shared/types'
 
@@ -13,10 +13,10 @@ function rowToGroup(row: typeof groups.$inferSelect): Group {
   }
 }
 
-export function upsertGroup(data: { id: string; name: string }): Group {
+export async function upsertGroup(data: { id: string; name: string }): Promise<Group> {
   const now = Date.now()
 
-  drizzleDb.insert(groups).values({
+  await getDb().insert(groups).values({
     id: data.id,
     name: data.name,
     createdAt: now,
@@ -27,34 +27,33 @@ export function upsertGroup(data: { id: string; name: string }): Group {
       name: data.name,
       updatedAt: now,
     },
-  }).run()
+  })
 
-  const row = drizzleDb.select().from(groups).where(eq(groups.id, data.id)).get()
-  if (!row) throw new Error(`Failed to upsert group with id ${data.id}`)
-  return rowToGroup(row)
+  const rows = await getDb().select().from(groups).where(eq(groups.id, data.id))
+  if (rows.length === 0) throw new Error(`Failed to upsert group with id ${data.id}`)
+  return rowToGroup(rows[0])
 }
 
-export function syncUserGroups(userId: string, groupIds: string[]): void {
-  drizzleDb.delete(userGroups).where(eq(userGroups.userId, userId)).run()
+export async function syncUserGroups(userId: string, groupIds: string[]): Promise<void> {
+  await getDb().delete(userGroups).where(eq(userGroups.userId, userId))
 
   for (const groupId of groupIds) {
-    drizzleDb.insert(userGroups).values({
+    await getDb().insert(userGroups).values({
       userId,
       groupId,
-    }).run()
+    })
   }
 }
 
-export function getUserGroupIds(userId: string): string[] {
-  const rows = drizzleDb
+export async function getUserGroupIds(userId: string): Promise<string[]> {
+  const rows = await getDb()
     .select({ groupId: userGroups.groupId })
     .from(userGroups)
     .where(eq(userGroups.userId, userId))
-    .all()
   return rows.map((r) => r.groupId)
 }
 
-export function listGroups(): Group[] {
-  const rows = drizzleDb.select().from(groups).all()
+export async function listGroups(): Promise<Group[]> {
+  const rows = await getDb().select().from(groups)
   return rows.map(rowToGroup)
 }

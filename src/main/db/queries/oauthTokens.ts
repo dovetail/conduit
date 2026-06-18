@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm'
-import { drizzleDb } from '../index'
+import { getDb } from '../index'
 import { oauthTokens } from '../schema'
 import type { OAuthToken } from '../../../shared/types'
 
@@ -14,18 +14,17 @@ function rowToOAuthToken(row: typeof oauthTokens.$inferSelect): OAuthToken {
   }
 }
 
-export function getToken(serverUrl: string): OAuthToken | null {
-  const rows = drizzleDb
+export async function getToken(serverUrl: string): Promise<OAuthToken | null> {
+  const rows = await getDb()
     .select()
     .from(oauthTokens)
     .where(eq(oauthTokens.serverUrl, serverUrl))
-    .all()
   if (rows.length === 0) return null
   return rowToOAuthToken(rows[0])
 }
 
-export function saveToken(token: OAuthToken): void {
-  drizzleDb
+export async function saveToken(token: OAuthToken): Promise<void> {
+  await getDb()
     .insert(oauthTokens)
     .values({
       serverUrl: token.serverUrl,
@@ -45,9 +44,8 @@ export function saveToken(token: OAuthToken): void {
         scope: token.scope ?? null,
       },
     })
-    .run()
 }
 
-export function deleteToken(serverUrl: string): void {
-  drizzleDb.delete(oauthTokens).where(eq(oauthTokens.serverUrl, serverUrl)).run()
+export async function deleteToken(serverUrl: string): Promise<void> {
+  await getDb().delete(oauthTokens).where(eq(oauthTokens.serverUrl, serverUrl))
 }

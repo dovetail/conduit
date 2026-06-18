@@ -15,12 +15,11 @@ import * as path from 'path'
 import * as os from 'os'
 import { initDb } from '../src/main/db/index'
 import { listGlobalMcps, createGlobalMcp, updateGlobalMcp } from '../src/main/db/queries/globalMcps'
+import { DEV_USER_ID, DEV_CONTEXT } from '../src/server/auth/config'
 import type { McpServerEntry } from '../src/shared/types'
 
 // Point the DB at ~/.conduit (same as the running server)
 process.env.CONDUIT_DATA_DIR = process.env.CONDUIT_DATA_DIR ?? path.join(os.homedir(), '.conduit')
-
-initDb()
 
 // ─── MCP definitions ──────────────────────────────────────────────────────────
 
@@ -80,30 +79,39 @@ const MCPS: Array<{
 
 // ─── Upsert logic ─────────────────────────────────────────────────────────────
 
-const existing = listGlobalMcps()
-const existingByKey = new Map(existing.map(m => [m.serverKey, m]))
+async function main(): Promise<void> {
+  await initDb()
 
-for (const def of MCPS) {
-  const found = existingByKey.get(def.serverKey)
-  if (found) {
-    updateGlobalMcp(found.id, {
-      name: def.name,
-      serverConfig: def.serverConfig,
-    })
-    console.log(`  ↺  Updated: ${def.name} (${def.serverKey})`)
-  } else {
-    createGlobalMcp({
-      name: def.name,
-      serverKey: def.serverKey,
-      serverConfig: def.serverConfig,
-      enabled: true,
-    })
-    console.log(`  ✓  Added:   ${def.name} (${def.serverKey})`)
+  const existing = await listGlobalMcps(DEV_CONTEXT.userId, DEV_CONTEXT.userGroupIds)
+  const existingByKey = new Map(existing.map(m => [m.serverKey, m]))
+
+  for (const def of MCPS) {
+    const found = existingByKey.get(def.serverKey)
+    if (found) {
+      await updateGlobalMcp(found.id, {
+        name: def.name,
+        serverConfig: def.serverConfig,
+      })
+      console.log(`  ↺  Updated: ${def.name} (${def.serverKey})`)
+    } else {
+      await createGlobalMcp({
+        name: def.name,
+        serverKey: def.serverKey,
+        serverConfig: def.serverConfig,
+        enabled: true,
+      }, DEV_USER_ID)
+      console.log(`  ✓  Added:   ${def.name} (${def.serverKey})`)
+    }
   }
+
+  console.log('\nDone. Required env vars:\n')
+  console.log('  Sentry:    SENTRY_ACCESS_TOKEN')
+  console.log('  Datadog:   DD_API_KEY  DD_APP_KEY  DD_SITE')
+  console.log('  Buildkite: BUILDKITE_API_TOKEN')
+  console.log('\nSet them in your system environment or in each agent\'s env-var editor.')
 }
 
-console.log('\nDone. Required env vars:\n')
-console.log('  Sentry:    SENTRY_ACCESS_TOKEN')
-console.log('  Datadog:   DD_API_KEY  DD_APP_KEY  DD_SITE')
-console.log('  Buildkite: BUILDKITE_API_TOKEN')
-console.log('\nSet them in your system environment or in each agent\'s env-var editor.')
+main().catch((err) => {
+  console.error('[seed] Failed:', err)
+  process.exit(1)
+})

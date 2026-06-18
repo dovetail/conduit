@@ -71,7 +71,7 @@ export function createTriggerRoutes(triggerService: TriggerService): Router {
         const userId = event.user as string
 
         // Find matching enabled slack triggers
-        const allTriggers = listAllEnabledTriggers().filter(t => t.type === 'slack')
+        const allTriggers = (await listAllEnabledTriggers()).filter(t => t.type === 'slack')
         const matching = allTriggers.filter(t => {
           const config = t.config as SlackTriggerConfig
           // Match if no channel filter or channel matches
@@ -105,7 +105,7 @@ export function createTriggerRoutes(triggerService: TriggerService): Router {
 
   router.post('/webhook/:triggerId', async (req: Request, res: Response) => {
     const triggerId = req.params.triggerId as string
-    const trigger = getTrigger(triggerId)
+    const trigger = await getTrigger(triggerId)
 
     if (!trigger || !trigger.enabled) {
       res.status(404).json({ error: 'Trigger not found or disabled' })

@@ -226,7 +226,7 @@ export async function publishRunResult(
 ): Promise<void> {
   if (run.status !== 'completed') return
 
-  const agent = getAgent(agentId)
+  const agent = await getAgent(agentId)
   if (!agent?.publishTargetIds?.length) return
 
   let fullStdout = ''
@@ -249,7 +249,7 @@ export async function publishRunResult(
     : publishContent
 
   for (const targetId of agent.publishTargetIds) {
-    const target = getPublishTarget(targetId)
+    const target = await getPublishTarget(targetId)
     if (!target || !target.enabled) continue
 
     try {

@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm'
-import { drizzleDb } from '../index'
+import { getDb } from '../index'
 import { globalMcpServers } from '../schema'
 import { getVisibleEntityIds } from './access'
 import { deleteSharesForEntity } from './shares'
@@ -11,52 +11,52 @@ function rowToGlobalMcpServer(row: typeof globalMcpServers.$inferSelect): Global
     name: row.name,
     serverKey: row.serverKey,
     serverConfig: JSON.parse(row.serverConfig) as McpServerEntry,
-    enabled: row.enabled === 1,
+    enabled: row.enabled,
     ownerId: row.ownerId ?? undefined,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }
 }
 
-export function listGlobalMcps(userId: string, userGroupIds: string[]): GlobalMcpServer[] {
-  const visibleIds = getVisibleEntityIds('globalMcpServer', userId, userGroupIds)
+export async function listGlobalMcps(userId: string, userGroupIds: string[]): Promise<GlobalMcpServer[]> {
+  const visibleIds = await getVisibleEntityIds('globalMcpServer', userId, userGroupIds)
   if (visibleIds.length === 0) return []
-  const rows = drizzleDb.select().from(globalMcpServers).all()
+  const rows = await getDb().select().from(globalMcpServers)
   return rows.filter(r => visibleIds.includes(r.id)).map(rowToGlobalMcpServer)
 }
 
-export function listEnabledGlobalMcps(): GlobalMcpServer[] {
-  const rows = drizzleDb.select().from(globalMcpServers).where(eq(globalMcpServers.enabled, 1)).all()
+export async function listEnabledGlobalMcps(): Promise<GlobalMcpServer[]> {
+  const rows = await getDb().select().from(globalMcpServers).where(eq(globalMcpServers.enabled, true))
   return rows.map(rowToGlobalMcpServer)
 }
 
-export function createGlobalMcp(
+export async function createGlobalMcp(
   data: Omit<GlobalMcpServer, 'id' | 'createdAt' | 'updatedAt'>,
   ownerId: string
-): GlobalMcpServer {
+): Promise<GlobalMcpServer> {
   const now = Date.now()
   const id = crypto.randomUUID()
 
-  drizzleDb.insert(globalMcpServers).values({
+  await getDb().insert(globalMcpServers).values({
     id,
     name: data.name,
     serverKey: data.serverKey,
     serverConfig: JSON.stringify(data.serverConfig),
-    enabled: data.enabled ? 1 : 0,
+    enabled: data.enabled,
     ownerId,
     createdAt: now,
     updatedAt: now,
-  }).run()
+  })
 
-  const rows = drizzleDb.select().from(globalMcpServers).where(eq(globalMcpServers.id, id)).all()
+  const rows = await getDb().select().from(globalMcpServers).where(eq(globalMcpServers.id, id))
   if (rows.length === 0) throw new Error(`Failed to create global MCP server with id ${id}`)
   return rowToGlobalMcpServer(rows[0])
 }
 
-export function updateGlobalMcp(
+export async function updateGlobalMcp(
   id: string,
   data: Partial<Omit<GlobalMcpServer, 'id' | 'createdAt' | 'updatedAt'>>
-): GlobalMcpServer {
+): Promise<GlobalMcpServer> {
   const now = Date.now()
 
   const updateValues: Partial<typeof globalMcpServers.$inferInsert> = {
@@ -66,16 +66,16 @@ export function updateGlobalMcp(
   if (data.name !== undefined) updateValues.name = data.name
   if (data.serverKey !== undefined) updateValues.serverKey = data.serverKey
   if (data.serverConfig !== undefined) updateValues.serverConfig = JSON.stringify(data.serverConfig)
-  if (data.enabled !== undefined) updateValues.enabled = data.enabled ? 1 : 0
+  if (data.enabled !== undefined) updateValues.enabled = data.enabled
 
-  drizzleDb.update(globalMcpServers).set(updateValues).where(eq(globalMcpServers.id, id)).run()
+  await getDb().update(globalMcpServers).set(updateValues).where(eq(globalMcpServers.id, id))
 
-  const rows = drizzleDb.select().from(globalMcpServers).where(eq(globalMcpServers.id, id)).all()
+  const rows = await getDb().select().from(globalMcpServers).where(eq(globalMcpServers.id, id))
   if (rows.length === 0) throw new Error(`Global MCP server with id ${id} not found after update`)
   return rowToGlobalMcpServer(rows[0])
 }
 
-export function deleteGlobalMcp(id: string): void {
-  deleteSharesForEntity('globalMcpServer', id)
-  drizzleDb.delete(globalMcpServers).where(eq(globalMcpServers.id, id)).run()
+export async function deleteGlobalMcp(id: string): Promise<void> {
+  await deleteSharesForEntity('globalMcpServer', id)
+  await getDb().delete(globalMcpServers).where(eq(globalMcpServers.id, id))
 }

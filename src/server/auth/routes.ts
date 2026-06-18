@@ -67,7 +67,7 @@ router.get('/callback', async (req: Request, res: Response) => {
     const claimGroups = (claims.groups as string[]) || []
 
     // Upsert user
-    upsertUser({
+    await upsertUser({
       id: sub,
       email,
       name,
@@ -77,15 +77,15 @@ router.get('/callback', async (req: Request, res: Response) => {
     // Upsert groups and sync membership
     const groupIds: string[] = []
     for (const groupName of claimGroups) {
-      const group = upsertGroup({ id: groupName, name: groupName })
+      const group = await upsertGroup({ id: groupName, name: groupName })
       groupIds.push(group.id)
     }
-    syncUserGroups(sub, groupIds)
+    await syncUserGroups(sub, groupIds)
 
     // Create session
     const { sessionTtlMs } = getOktaConfig()
     const expiresAt = Date.now() + (expiresIn ? expiresIn * 1000 : sessionTtlMs)
-    const session = createSession({
+    const session = await createSession({
       userId: sub,
       accessToken,
       refreshToken,
@@ -108,16 +108,16 @@ router.get('/callback', async (req: Request, res: Response) => {
   }
 })
 
-router.post('/logout', (req: Request, res: Response) => {
+router.post('/logout', async (req: Request, res: Response) => {
   const sessionId: string | undefined = req.cookies?.conduit_session
   if (sessionId) {
-    deleteSession(sessionId)
+    await deleteSession(sessionId)
   }
   res.clearCookie('conduit_session')
   res.status(200).json({ ok: true })
 })
 
-router.get('/me', (req: Request, res: Response) => {
+router.get('/me', async (req: Request, res: Response) => {
   if (!isAuthEnabled()) {
     res.json({
       user: DEV_USER,
@@ -134,20 +134,20 @@ router.get('/me', (req: Request, res: Response) => {
     return
   }
 
-  const session = getSession(sessionId)
+  const session = await getSession(sessionId)
   if (!session) {
     res.status(401).json({ error: 'Not authenticated' })
     return
   }
 
-  const user = getUser(session.userId)
+  const user = await getUser(session.userId)
   if (!user) {
     res.status(401).json({ error: 'User not found' })
     return
   }
 
-  const userGroupIds = getUserGroupIds(user.id)
-  const allGroups = listGroups()
+  const userGroupIds = await getUserGroupIds(user.id)
+  const allGroups = await listGroups()
   const userGroups = allGroups.filter((g) => userGroupIds.includes(g.id))
 
   res.json({

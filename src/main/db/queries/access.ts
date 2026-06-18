@@ -1,4 +1,4 @@
-import { db } from '../index'
+import { rawQuery } from '../index'
 import { DEV_USER_ID } from '../../../server/auth/config'
 import type { ShareableEntityType } from '../../../shared/types'
 
@@ -9,16 +9,22 @@ const TABLE_MAP: Record<ShareableEntityType, string> = {
   globalMcpServer: 'global_mcp_servers',
 }
 
-export function getVisibleEntityIds(
+// Rewrites `?` placeholders to pg-style `$1..$n` in positional order.
+function pg(sql: string): string {
+  let i = 0
+  return sql.replace(/\?/g, () => `$${++i}`)
+}
+
+export async function getVisibleEntityIds(
   entityType: ShareableEntityType,
   userId: string,
   userGroupIds: string[]
-): string[] {
+): Promise<string[]> {
   const table = TABLE_MAP[entityType]
 
   // Dev user sees everything
   if (userId === DEV_USER_ID) {
-    const rows = db.prepare(`SELECT id FROM ${table}`).all() as { id: string }[]
+    const rows = await rawQuery<{ id: string }>(`SELECT id FROM ${table}`)
     return rows.map(r => r.id)
   }
 
@@ -46,16 +52,16 @@ export function getVisibleEntityIds(
   params.push(entityType)
 
   const sql = parts.join(' UNION ')
-  const rows = db.prepare(sql).all(...params) as { id?: string; entity_id?: string }[]
+  const rows = await rawQuery<{ id?: string; entity_id?: string }>(pg(sql), params)
   return rows.map(r => r.id ?? r.entity_id!)
 }
 
-export function canAccessEntity(
+export async function canAccessEntity(
   entityType: ShareableEntityType,
   entityId: string,
   userId: string,
   userGroupIds: string[]
-): boolean {
+): Promise<boolean> {
   if (userId === DEV_USER_ID) return true
 
   const table = TABLE_MAP[entityType]
@@ -83,16 +89,19 @@ export function canAccessEntity(
 
   // Check if any matching row exists via COUNT on the union subquery
   const unionSql = parts.join(' UNION ')
-  const row = db.prepare(`SELECT COUNT(*) AS cnt FROM (${unionSql}) sub`).get(...params) as { cnt: number }
-  return row.cnt > 0
+  const rows = await rawQuery<{ cnt: string }>(pg(`SELECT COUNT(*) AS cnt FROM (${unionSql}) sub`), params)
+  return Number(rows[0]?.cnt ?? 0) > 0
 }
 
-export function isEntityOwner(
+export async function isEntityOwner(
   entityType: ShareableEntityType,
   entityId: string,
   userId: string
-): boolean {
+): Promise<boolean> {
   const table = TABLE_MAP[entityType]
-  const row = db.prepare(`SELECT id FROM ${table} WHERE id = ? AND owner_id = ?`).get(entityId, userId) as { id: string } | undefined
-  return !!row
+  const rows = await rawQuery<{ id: string }>(
+    pg(`SELECT id FROM ${table} WHERE id = ? AND owner_id = ?`),
+    [entityId, userId]
+  )
+  return rows.length > 0
 }

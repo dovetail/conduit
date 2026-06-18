@@ -14,8 +14,8 @@ export class TriggerService {
   }
 
   /** Load all enabled triggers from DB and register cron jobs. Called at server startup. */
-  start(): void {
-    const triggers = listAllEnabledTriggers()
+  async start(): Promise<void> {
+    const triggers = await listAllEnabledTriggers()
     let cronCount = 0
     for (const trigger of triggers) {
       if (trigger.type === 'cron') {
@@ -59,7 +59,7 @@ export class TriggerService {
 
   /** Execute a trigger — start an agent run with optional context. */
   async executeTrigger(triggerId: string, context?: TriggerContext): Promise<ExecutionRun | null> {
-    const trigger = getTrigger(triggerId)
+    const trigger = await getTrigger(triggerId)
     if (!trigger || !trigger.enabled) {
       console.warn(`[triggers] Trigger ${triggerId} not found or disabled`)
       return null
@@ -77,7 +77,7 @@ export class TriggerService {
       const run = await startRunServer(trigger.agentId, this.broadcast, triggerContext)
 
       // Update lastTriggeredAt
-      updateTrigger(trigger.id, { lastTriggeredAt: Date.now() })
+      await updateTrigger(trigger.id, { lastTriggeredAt: Date.now() })
 
       // Broadcast trigger:fired event
       this.broadcast('trigger:fired', {

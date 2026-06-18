@@ -1,5 +1,5 @@
 import { eq, and } from 'drizzle-orm'
-import { drizzleDb } from '../index'
+import { getDb } from '../index'
 import { shares } from '../schema'
 import type { Share, ShareableEntityType } from '../../../shared/types'
 
@@ -15,32 +15,31 @@ function rowToShare(row: typeof shares.$inferSelect): Share {
   }
 }
 
-export function getShare(id: string): Share | null {
-  const rows = drizzleDb.select().from(shares).where(eq(shares.id, id)).all()
+export async function getShare(id: string): Promise<Share | null> {
+  const rows = await getDb().select().from(shares).where(eq(shares.id, id))
   if (rows.length === 0) return null
   return rowToShare(rows[0])
 }
 
-export function listShares(entityType: ShareableEntityType, entityId: string): Share[] {
-  const rows = drizzleDb
+export async function listShares(entityType: ShareableEntityType, entityId: string): Promise<Share[]> {
+  const rows = await getDb()
     .select()
     .from(shares)
     .where(and(eq(shares.entityType, entityType), eq(shares.entityId, entityId)))
-    .all()
   return rows.map(rowToShare)
 }
 
-export function createShare(data: {
+export async function createShare(data: {
   entityType: ShareableEntityType
   entityId: string
   targetType: 'user' | 'group' | 'everyone'
   targetId?: string
   createdBy: string
-}): Share {
+}): Promise<Share> {
   const id = crypto.randomUUID()
   const now = Date.now()
 
-  drizzleDb.insert(shares).values({
+  await getDb().insert(shares).values({
     id,
     entityType: data.entityType,
     entityId: data.entityId,
@@ -48,20 +47,19 @@ export function createShare(data: {
     targetId: data.targetType === 'everyone' ? null : (data.targetId ?? null),
     createdBy: data.createdBy,
     createdAt: now,
-  }).run()
+  })
 
-  const rows = drizzleDb.select().from(shares).where(eq(shares.id, id)).all()
+  const rows = await getDb().select().from(shares).where(eq(shares.id, id))
   if (rows.length === 0) throw new Error(`Failed to create share with id ${id}`)
   return rowToShare(rows[0])
 }
 
-export function deleteShare(id: string): void {
-  drizzleDb.delete(shares).where(eq(shares.id, id)).run()
+export async function deleteShare(id: string): Promise<void> {
+  await getDb().delete(shares).where(eq(shares.id, id))
 }
 
-export function deleteSharesForEntity(entityType: ShareableEntityType, entityId: string): void {
-  drizzleDb
+export async function deleteSharesForEntity(entityType: ShareableEntityType, entityId: string): Promise<void> {
+  await getDb()
     .delete(shares)
     .where(and(eq(shares.entityType, entityType), eq(shares.entityId, entityId)))
-    .run()
 }

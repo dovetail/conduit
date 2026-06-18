@@ -14,8 +14,8 @@ export function getDevContext(): RequestContext {
   return DEV_CONTEXT
 }
 
-export function ensureDevUser(): void {
-  upsertUser({
+export async function ensureDevUser(): Promise<void> {
+  await upsertUser({
     id: DEV_USER_ID,
     email: 'dev@localhost',
     name: 'Developer',

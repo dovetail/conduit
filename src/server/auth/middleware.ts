@@ -13,7 +13,7 @@ declare global {
   }
 }
 
-export function sessionMiddleware(req: Request, res: Response, next: NextFunction): void {
+export async function sessionMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
   if (!isAuthEnabled()) {
     req.context = getDevContext()
     next()
@@ -26,23 +26,27 @@ export function sessionMiddleware(req: Request, res: Response, next: NextFunctio
     return
   }
 
-  const session = getSession(sessionId)
-  if (!session) {
-    res.status(401).json({ error: 'Not authenticated' })
-    return
-  }
+  try {
+    const session = await getSession(sessionId)
+    if (!session) {
+      res.status(401).json({ error: 'Not authenticated' })
+      return
+    }
 
-  if (session.expiresAt < Date.now()) {
-    deleteSession(session.id)
-    res.status(401).json({ error: 'Session expired' })
-    return
-  }
+    if (session.expiresAt < Date.now()) {
+      await deleteSession(session.id)
+      res.status(401).json({ error: 'Session expired' })
+      return
+    }
 
-  const userGroupIds = getUserGroupIds(session.userId)
-  req.context = {
-    userId: session.userId,
-    userGroupIds,
-  }
+    const userGroupIds = await getUserGroupIds(session.userId)
+    req.context = {
+      userId: session.userId,
+      userGroupIds,
+    }
 
-  next()
+    next()
+  } catch (err) {
+    next(err)
+  }
 }

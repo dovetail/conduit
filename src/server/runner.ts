@@ -61,7 +61,7 @@ export async function startRunServer(
   startedBy?: string
 ): Promise<ExecutionRun> {
   // 1. Load agent
-  const agent = getAgent(agentId)
+  const agent = await getAgent(agentId)
   if (!agent) throw new Error(`Agent ${agentId} not found`)
 
   // 2. Determine workspace: repo worktree > fixed workingDir > ephemeral
@@ -70,7 +70,7 @@ export async function startRunServer(
   let worktreeClonePath: string | undefined
 
   if (agent.repositoryId) {
-    const repo = getRepository(agent.repositoryId)
+    const repo = await getRepository(agent.repositoryId)
     if (!repo) throw new Error(`Repository ${agent.repositoryId} not found`)
     if (repo.syncStatus !== 'ready') {
       throw new Error(
@@ -94,7 +94,7 @@ export async function startRunServer(
   }
 
   // 4. Create run record (log path updated after we have the runId)
-  const runRecord = createRun({
+  const runRecord = await createRun({
     agentId,
     status: 'running',
     startedAt: Date.now(),
@@ -111,11 +111,11 @@ export async function startRunServer(
   const realLogPath = path.join(LOGS_DIR, `${runId}.jsonl`)
 
   // Update run record with the real log path
-  const run = updateRun(runId, { logPath: realLogPath })
+  const run = await updateRun(runId, { logPath: realLogPath })
 
   // 3b. Write MCP config now that we have the runId
-  const mergedMcpConfig = buildMergedMcpConfig(agent.mcpConfig)
-  const mcpConfigPath = writeMcpConfig(runId, mergedMcpConfig)
+  const mergedMcpConfig = await buildMergedMcpConfig(agent.mcpConfig)
+  const mcpConfigPath = await writeMcpConfig(runId, mergedMcpConfig)
 
   // 5. Open log file write stream
   const logStream = fs.createWriteStream(realLogPath, { flags: 'a', encoding: 'utf8' })
@@ -168,10 +168,10 @@ export async function startRunServer(
   // Guard against double-finalization (e.g. stopRun + close event)
   let finalized = false
 
-  function finalizeRun(
+  async function finalizeRun(
     status: 'completed' | 'failed' | 'stopped',
     exitCode: number | null | undefined
-  ): void {
+  ): Promise<void> {
     if (finalized) return
     finalized = true
     activeProcesses.delete(runId)
@@ -192,7 +192,7 @@ export async function startRunServer(
     const endedAt = Date.now()
     const durationMs = endedAt - run.startedAt
 
-    const finalRun = updateRun(runId, {
+    const finalRun = await updateRun(runId, {
       status,
       endedAt,
       durationMs,
@@ -241,7 +241,7 @@ export async function startRunServer(
     const endedAt = Date.now()
     const durationMs = endedAt - run.startedAt
 
-    const launchedRun = updateRun(runId, { status: 'launched', endedAt, durationMs })
+    const launchedRun = await updateRun(runId, { status: 'launched', endedAt, durationMs })
 
     broadcast('run:statusChange', { runId, status: 'launched', endedAt, durationMs })
 
@@ -276,7 +276,7 @@ export async function startRunServer(
   } catch (err) {
     cleanupRun(runId, workspacePath, isEphemeral, worktreeClonePath)
     logStream.end()
-    updateRun(runId, { status: 'failed', endedAt: Date.now() })
+    await updateRun(runId, { status: 'failed', endedAt: Date.now() })
     broadcast('run:statusChange', { runId, status: 'failed' })
     throw err
   }

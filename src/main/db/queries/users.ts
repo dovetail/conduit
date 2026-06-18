@@ -1,5 +1,5 @@
-import { eq, like, or } from 'drizzle-orm'
-import { drizzleDb } from '../index'
+import { eq, ilike, or } from 'drizzle-orm'
+import { getDb } from '../index'
 import { users } from '../schema'
 import type { User } from '../../../shared/types'
 
@@ -14,15 +14,15 @@ function rowToUser(row: typeof users.$inferSelect): User {
   }
 }
 
-export function upsertUser(data: {
+export async function upsertUser(data: {
   id: string
   email: string
   name: string
   avatarUrl?: string
-}): User {
+}): Promise<User> {
   const now = Date.now()
 
-  drizzleDb.insert(users).values({
+  await getDb().insert(users).values({
     id: data.id,
     email: data.email,
     name: data.name,
@@ -37,30 +37,29 @@ export function upsertUser(data: {
       avatarUrl: data.avatarUrl ?? null,
       lastLoginAt: now,
     },
-  }).run()
+  })
 
-  const row = drizzleDb.select().from(users).where(eq(users.id, data.id)).get()
-  if (!row) throw new Error(`Failed to upsert user with id ${data.id}`)
-  return rowToUser(row)
+  const rows = await getDb().select().from(users).where(eq(users.id, data.id))
+  if (rows.length === 0) throw new Error(`Failed to upsert user with id ${data.id}`)
+  return rowToUser(rows[0])
 }
 
-export function getUser(id: string): User | null {
-  const row = drizzleDb.select().from(users).where(eq(users.id, id)).get()
-  if (!row) return null
-  return rowToUser(row)
+export async function getUser(id: string): Promise<User | null> {
+  const rows = await getDb().select().from(users).where(eq(users.id, id))
+  if (rows.length === 0) return null
+  return rowToUser(rows[0])
 }
 
-export function listUsers(): User[] {
-  const rows = drizzleDb.select().from(users).all()
+export async function listUsers(): Promise<User[]> {
+  const rows = await getDb().select().from(users)
   return rows.map(rowToUser)
 }
 
-export function searchUsers(query: string): User[] {
+export async function searchUsers(query: string): Promise<User[]> {
   const pattern = `%${query}%`
-  const rows = drizzleDb
+  const rows = await getDb()
     .select()
     .from(users)
-    .where(or(like(users.name, pattern), like(users.email, pattern)))
-    .all()
+    .where(or(ilike(users.name, pattern), ilike(users.email, pattern)))
   return rows.map(rowToUser)
 }

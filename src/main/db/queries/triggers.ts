@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm'
-import { drizzleDb } from '../index'
+import { getDb } from '../index'
 import { triggers } from '../schema'
 import type { Trigger, TriggerConfig } from '../../../shared/types'
 
@@ -10,72 +10,72 @@ function rowToTrigger(row: typeof triggers.$inferSelect): Trigger {
     name: row.name,
     type: row.type as Trigger['type'],
     config: JSON.parse(row.config) as TriggerConfig,
-    enabled: row.enabled === 1,
+    enabled: row.enabled,
     lastTriggeredAt: row.lastTriggeredAt ?? undefined,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }
 }
 
-export function listTriggers(agentId: string): Trigger[] {
-  const rows = drizzleDb.select().from(triggers).where(eq(triggers.agentId, agentId)).all()
+export async function listTriggers(agentId: string): Promise<Trigger[]> {
+  const rows = await getDb().select().from(triggers).where(eq(triggers.agentId, agentId))
   return rows.map(rowToTrigger)
 }
 
-export function listAllEnabledTriggers(): Trigger[] {
-  const rows = drizzleDb.select().from(triggers).where(eq(triggers.enabled, 1)).all()
+export async function listAllEnabledTriggers(): Promise<Trigger[]> {
+  const rows = await getDb().select().from(triggers).where(eq(triggers.enabled, true))
   return rows.map(rowToTrigger)
 }
 
-export function getTrigger(id: string): Trigger | null {
-  const rows = drizzleDb.select().from(triggers).where(eq(triggers.id, id)).all()
+export async function getTrigger(id: string): Promise<Trigger | null> {
+  const rows = await getDb().select().from(triggers).where(eq(triggers.id, id))
   if (rows.length === 0) return null
   return rowToTrigger(rows[0])
 }
 
-export function createTrigger(
+export async function createTrigger(
   data: Omit<Trigger, 'id' | 'createdAt' | 'updatedAt'>
-): Trigger {
+): Promise<Trigger> {
   const now = Date.now()
   const id = crypto.randomUUID()
 
-  drizzleDb.insert(triggers).values({
+  await getDb().insert(triggers).values({
     id,
     agentId: data.agentId,
     name: data.name,
     type: data.type,
     config: JSON.stringify(data.config),
-    enabled: data.enabled ? 1 : 0,
+    enabled: data.enabled,
     lastTriggeredAt: data.lastTriggeredAt ?? null,
     createdAt: now,
     updatedAt: now,
-  }).run()
+  })
 
-  const created = getTrigger(id)
+  const created = await getTrigger(id)
   if (!created) throw new Error(`Failed to create trigger with id ${id}`)
   return created
 }
 
-export function updateTrigger(
+export async function updateTrigger(
   id: string,
   data: Partial<Omit<Trigger, 'id' | 'createdAt' | 'updatedAt'>>
-): Trigger {
+): Promise<Trigger> {
   const now = Date.now()
   const updateValues: Partial<typeof triggers.$inferInsert> = { updatedAt: now }
 
   if (data.name !== undefined) updateValues.name = data.name
   if (data.type !== undefined) updateValues.type = data.type
   if (data.config !== undefined) updateValues.config = JSON.stringify(data.config)
-  if (data.enabled !== undefined) updateValues.enabled = data.enabled ? 1 : 0
+  if (data.enabled !== undefined) updateValues.enabled = data.enabled
   if (data.lastTriggeredAt !== undefined) updateValues.lastTriggeredAt = data.lastTriggeredAt
 
-  drizzleDb.update(triggers).set(updateValues).where(eq(triggers.id, id)).run()
+  await getDb().update(triggers).set(updateValues).where(eq(triggers.id, id))
 
-  const updated = getTrigger(id)
+  const updated = await getTrigger(id)
   if (!updated) throw new Error(`Trigger with id ${id} not found after update`)
   return updated
 }
 
-export function deleteTrigger(id: string): void {
-  drizzleDb.delete(triggers).where(eq(triggers.id, id)).run()
+export async function deleteTrigger(id: string): Promise<void> {
+  await getDb().delete(triggers).where(eq(triggers.id, id))
 }
