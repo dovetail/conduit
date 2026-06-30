@@ -58,6 +58,7 @@ Conduit supports multi-user authentication via Okta OIDC. When Okta is not confi
 | `CONDUIT_SESSION_SECRET` | Secret for signing session cookies |
 | `CONDUIT_SESSION_TTL_MS` | Session lifetime in ms (default: 86400000 / 24h) |
 | `CONDUIT_OKTA_API_TOKEN` | Okta API token for user search (optional — enables sharing with users who haven't logged in yet) |
+| `CONDUIT_SECRET_KEY` | Symmetric key for encrypting repository GitHub App private keys at rest. Hex-encoded, must decode to exactly 32 bytes (64 hex chars). Generate with `openssl rand -hex 32`. **Required** whenever any repository uses GitHub App auth — encryption/decryption throws loudly if it's missing or the wrong length (no silent fallback). **No rotation:** changing it after PEMs are stored makes all existing encrypted keys undecryptable; each affected repo must re-upload its key. |
 
 **Auth flow**: OIDC Authorization Code + PKCE. Sessions stored in SQLite. Groups synced from Okta ID token `groups` claim on each login.
 
@@ -98,6 +99,25 @@ Every entity (agents, publish targets, repositories, global MCP servers) has an 
 - `src/renderer/hooks/useShares.ts` — TanStack Query hooks for shares
 
 **Frontend**: The sidebar splits entities into "My Agents" / "Shared Agents" sections. The share button and delete button only appear for owners.
+
+## Repository Authentication
+
+Managed repositories authenticate to GitHub via one of four methods (`authMethod` in `src/shared/types.ts`, `RepoAuthMethod`):
+
+- `none` — public repo, no credentials
+- `pat` — global GitHub PAT from `prefs.json` / env (`getGithubPat`)
+- `ssh` — SSH key (handled outside HTTPS token injection)
+- `githubapp` — per-repo GitHub App (App ID + private key PEM)
+
+**GitHub App auth**: two columns on the `repositories` table — `github_app_id` (TEXT, the App ID, not secret) and `github_private_key_enc` (TEXT, the PEM **encrypted** at rest). The PEM is encrypted with **AES-256-GCM** via `src/server/crypto.ts`; the key comes from `CONDUIT_SECRET_KEY` (see auth table above).
+
+The PEM is **write-only** from the client: it's sent on create/update and never returned. The API exposes only `githubAppId` and `hasGithubKey: boolean` (see `rowToRepository` in `src/main/db/queries/repositories.ts`; raw credentials are read server-side via `getRepositoryCredentials`).
+
+**Runtime token flow** (`src/server/githubApp.ts`, `@octokit/auth-app`): App ID + decrypted PEM → signed app JWT → installation auto-discovered for the repo's owner/repo via GitHub's API → short-lived (~1h) installation access token injected into the HTTPS git URL.
+
+**Files**:
+- `src/server/crypto.ts` — `encryptSecret` / `decryptSecret` (AES-256-GCM, `iv:authTag:ciphertext` base64)
+- `src/server/githubApp.ts` — `resolveRepoToken`, `mintInstallationToken`, `parseGithubOwnerRepo`
 
 ## Data Storage
 

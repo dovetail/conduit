@@ -111,6 +111,8 @@ export const repositories = pgTable('repositories', {
   lastSyncedAt: bigint('last_synced_at', { mode: 'number' }),
   clonePath: text('clone_path'),
   ownerId: text('owner_id'),
+  githubAppId: text('github_app_id'),
+  githubPrivateKeyEnc: text('github_private_key_enc'),
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
 })

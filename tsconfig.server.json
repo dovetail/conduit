@@ -1,6 +1,7 @@
 {
   "include": ["src/server/**/*", "src/main/**/*", "src/shared/**/*"],
   "exclude": [
+    "**/*.test.ts",
     "src/main/index.ts",
     "src/main/ipc/**/*",
     "src/main/services/**/*",

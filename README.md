@@ -78,8 +78,24 @@ All configuration is via environment variables.
 | `PORT` | `7456` | HTTP/WebSocket listen port |
 | `CONDUIT_DATA_DIR` | `~/.conduit` | Database and log storage directory |
 | `CONDUIT_ALLOWED_IPS` | *(open)* | Comma-separated CIDR allowlist, e.g. `10.0.0.0/8,127.0.0.1/32` |
+| `CONDUIT_SECRET_KEY` | *(none)* | Hex-encoded 32-byte key (64 hex chars) for encrypting repository GitHub App private keys at rest. Required when any repository uses GitHub App auth — see below. Generate with `openssl rand -hex 32`. |
 
 Environment variables referenced in MCP server configs (e.g. `${SENTRY_ACCESS_TOKEN}`) are expanded at run time from the server's process environment.
+
+### GitHub App authentication
+
+A managed repository can authenticate to GitHub with a **GitHub App** instead of a personal access token. Prefer this for org-owned repos: the install belongs to the organisation rather than an individual's PAT, and access is scoped to the repos the app is installed on. (For a personal repo, a PAT is simpler.)
+
+Setup:
+
+1. **Create a GitHub App** in your organisation's settings (Settings → Developer settings → GitHub Apps). Grant it the **Contents** repository permission (read/write as needed).
+2. **Generate and download a private key** — GitHub hands you a `.pem` file. Store it safely; you can't re-download it.
+3. **Install the app** on the org (or the specific repos). Nothing else is needed — Conduit auto-discovers the installation for each repo's owner/repo at run time.
+4. **Note the App ID** from the app's settings page.
+5. **Set `CONDUIT_SECRET_KEY`** in the server environment (`openssl rand -hex 32`). This encrypts the stored PEM. Do not change it after keys are saved, or existing keys become undecryptable and must be re-uploaded.
+6. In Conduit's **repository settings**, choose **GitHub App** as the auth method, enter the **App ID**, and upload the **PEM**.
+
+The PEM is encrypted with AES-256-GCM before it touches the database and is never returned to the client (the UI only shows whether a key is present). At run time Conduit mints a short-lived (~1h) installation token from the App ID + key and injects it into the HTTPS git URL.
 
 ## Project structure
 

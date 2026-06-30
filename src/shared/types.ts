@@ -192,19 +192,53 @@ export interface GlobalMcpServer {
 
 export type RepoSyncStatus = 'pending' | 'cloning' | 'ready' | 'syncing' | 'error'
 
+export type RepoAuthMethod = 'none' | 'pat' | 'ssh' | 'githubapp'
+
 export interface Repository {
   id: string
   name: string
   url: string
   defaultBranch: string
-  authMethod: 'none' | 'pat' | 'ssh'
+  authMethod: RepoAuthMethod
   syncStatus: RepoSyncStatus
   syncError?: string
   lastSyncedAt?: number
   clonePath?: string
   ownerId?: string
+  /** GitHub App ID (not secret) — present when authMethod is 'githubapp'. */
+  githubAppId?: string
+  /**
+   * Whether a GitHub App private key is stored for this repo. Derived server-side;
+   * the key itself is never returned to the client (write-only).
+   */
+  hasGithubKey?: boolean
   createdAt: number
   updatedAt: number
+}
+
+/**
+ * Fields accepted when creating or updating a repository. The raw PEM is
+ * write-only — it is encrypted server-side and never read back. On update, an
+ * absent/empty `githubPrivateKey` leaves the stored key untouched.
+ */
+export type RepositoryInput = Omit<
+  Repository,
+  'id' | 'createdAt' | 'updatedAt' | 'syncStatus' | 'clonePath' | 'hasGithubKey'
+> & {
+  /** Raw GitHub App private key PEM. Write-only. */
+  githubPrivateKey?: string
+}
+
+/** Payload for testing a repository connection before/without persisting it. */
+export interface RepoTestConnectionInput {
+  url: string
+  authMethod: RepoAuthMethod
+  /** GitHub App ID — required (with a key) for testing 'githubapp' auth. */
+  githubAppId?: string
+  /** Raw PEM to test with. If omitted, falls back to the stored key for `repoId`. */
+  githubPrivateKey?: string
+  /** Existing repo id — lets the test reuse the stored key when no new PEM is supplied. */
+  repoId?: string
 }
 
 export interface RepoSyncStatusPayload {
@@ -364,11 +398,11 @@ export interface ConduitAPI {
   repos: {
     list: () => Promise<Repository[]>
     get: (id: string) => Promise<Repository | null>
-    create: (data: Omit<Repository, 'id' | 'createdAt' | 'updatedAt' | 'syncStatus' | 'clonePath'>) => Promise<Repository>
-    update: (id: string, data: Partial<Omit<Repository, 'id' | 'createdAt' | 'updatedAt'>>) => Promise<Repository>
+    create: (data: RepositoryInput) => Promise<Repository>
+    update: (id: string, data: Partial<RepositoryInput>) => Promise<Repository>
     delete: (id: string) => Promise<void>
     triggerSync: (id: string) => Promise<void>
-    testConnection: (data: { url: string; authMethod: 'none' | 'pat' | 'ssh' }) => Promise<{ success: boolean; message: string }>
+    testConnection: (data: RepoTestConnectionInput) => Promise<{ success: boolean; message: string }>
   }
   onRepoSyncStatus: (cb: (payload: RepoSyncStatusPayload) => void) => () => void
   publishTargets: {

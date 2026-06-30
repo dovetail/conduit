@@ -2,6 +2,16 @@ import { spawn } from 'child_process'
 import * as fs from 'fs'
 
 /**
+ * Redact any credentials embedded in a URL's userinfo (e.g.
+ * `https://x-access-token:<token>@github.com/...`) before the string is logged,
+ * stored as syncError, or broadcast to clients. git echoes the remote URL in
+ * several failure modes, which would otherwise leak the PAT / installation token.
+ */
+export function redactCredentials(s: string): string {
+  return s.replace(/(https?:\/\/)[^/@\s]+@/gi, '$1***@')
+}
+
+/**
  * Run a git command and return a promise that resolves on success
  * or rejects with stderr on failure.
  */
@@ -23,7 +33,7 @@ function runGit(args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv
       if (code === 0) {
         resolve(stdout.trim())
       } else {
-        reject(new Error(`git ${args[0]} failed (exit ${code}): ${stderr.trim()}`))
+        reject(new Error(redactCredentials(`git ${args[0]} failed (exit ${code}): ${stderr.trim()}`)))
       }
     })
 

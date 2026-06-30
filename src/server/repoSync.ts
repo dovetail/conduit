@@ -2,7 +2,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { listRepositories, getRepository, updateRepository } from '../main/db/queries/repositories'
 import { cloneRepo, fetchRepo, removeWorktree } from './gitOps'
-import { getGithubPat } from './store'
+import { resolveRepoToken } from './githubApp'
 import { DEV_CONTEXT } from './auth/config'
 import type { BroadcastFn } from './runner'
 import type { RepoSyncStatus } from '../shared/types'
@@ -57,14 +57,14 @@ export class RepoSyncService {
       const repo = await getRepository(repoId)
       if (!repo || !repo.clonePath) return
 
-      const pat = repo.authMethod === 'pat' ? getGithubPat() : undefined
+      const token = await resolveRepoToken(repo)
 
       const needsClone = repo.syncStatus === 'pending' || !fs.existsSync(repo.clonePath)
 
       if (needsClone) {
         await this.updateStatus(repoId, 'cloning')
         try {
-          await cloneRepo(repo.url, repo.clonePath, repo.defaultBranch, pat)
+          await cloneRepo(repo.url, repo.clonePath, repo.defaultBranch, token)
           await updateRepository(repoId, {
             syncStatus: 'ready',
             lastSyncedAt: Date.now(),
@@ -80,7 +80,7 @@ export class RepoSyncService {
         // Repo exists on disk — do a fetch
         await this.updateStatus(repoId, 'syncing')
         try {
-          await fetchRepo(repo.clonePath, repo.url, pat)
+          await fetchRepo(repo.clonePath, repo.url, token)
           await updateRepository(repoId, {
             syncStatus: 'ready',
             lastSyncedAt: Date.now(),
