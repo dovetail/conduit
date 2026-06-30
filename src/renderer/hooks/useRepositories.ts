@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@renderer/lib/ipc'
-import type { Repository } from '@shared/types'
+import type { RepositoryInput, RepoTestConnectionInput } from '@shared/types'
 
 const REPOS_KEY = ['repositories'] as const
 
@@ -23,7 +23,7 @@ export function useRepository(id: string | undefined) {
 export function useCreateRepository() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (data: Omit<Repository, 'id' | 'createdAt' | 'updatedAt' | 'syncStatus' | 'clonePath'>) =>
+    mutationFn: (data: RepositoryInput) =>
       api.repos.create(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: REPOS_KEY })
@@ -39,7 +39,7 @@ export function useUpdateRepository() {
       data,
     }: {
       id: string
-      data: Partial<Omit<Repository, 'id' | 'createdAt' | 'updatedAt'>>
+      data: Partial<RepositoryInput>
     }) => api.repos.update(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: REPOS_KEY })
@@ -69,7 +69,7 @@ export function useTriggerRepoSync() {
 
 export function useTestRepoConnection() {
   return useMutation({
-    mutationFn: (data: { url: string; authMethod: 'none' | 'pat' | 'ssh' }) =>
+    mutationFn: (data: RepoTestConnectionInput) =>
       api.repos.testConnection(data),
   })
 }

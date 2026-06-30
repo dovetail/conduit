@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Plus, Pencil, Trash2, Info, Loader2, X, Check, RefreshCw, FolderGit2, ExternalLink, Share2 } from 'lucide-react'
+import { Plus, Pencil, Trash2, Info, Loader2, X, Check, RefreshCw, FolderGit2, ExternalLink, Share2, Upload } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { ShareDialog } from '@renderer/components/ShareDialog'
@@ -15,7 +15,7 @@ import {
 } from '@renderer/hooks/useRepositories'
 import { useAuth } from '@renderer/contexts/AuthContext'
 import { cn } from '@renderer/lib/utils'
-import type { Repository, RepoSyncStatus } from '@shared/types'
+import type { Repository, RepoSyncStatus, RepoAuthMethod, RepositoryInput } from '@shared/types'
 
 function statusColor(status: RepoSyncStatus): string {
   switch (status) {
@@ -51,11 +51,24 @@ interface FormState {
   name: string
   url: string
   defaultBranch: string
-  authMethod: 'none' | 'pat' | 'ssh'
+  authMethod: RepoAuthMethod
+  githubAppId: string
+  /** Newly-uploaded PEM this session — empty means "leave the stored key untouched". */
+  githubPrivateKey: string
+  /** Whether the repo already has a stored GitHub App key. */
+  hasGithubKey: boolean
 }
 
 function emptyForm(): FormState {
-  return { name: '', url: '', defaultBranch: 'main', authMethod: 'none' }
+  return {
+    name: '',
+    url: '',
+    defaultBranch: 'main',
+    authMethod: 'none',
+    githubAppId: '',
+    githubPrivateKey: '',
+    hasGithubKey: false,
+  }
 }
 
 function formFromRepo(repo: Repository): FormState {
@@ -64,22 +77,62 @@ function formFromRepo(repo: Repository): FormState {
     url: repo.url,
     defaultBranch: repo.defaultBranch,
     authMethod: repo.authMethod,
+    githubAppId: repo.githubAppId ?? '',
+    githubPrivateKey: '',
+    hasGithubKey: !!repo.hasGithubKey,
   }
 }
+
+/** Build the create/update payload, including GitHub App fields only when relevant. */
+function formToInput(form: FormState): RepositoryInput {
+  const base: RepositoryInput = {
+    name: form.name.trim(),
+    url: form.url.trim(),
+    defaultBranch: form.defaultBranch.trim(),
+    authMethod: form.authMethod,
+  }
+  if (form.authMethod === 'githubapp') {
+    base.githubAppId = form.githubAppId.trim()
+    // Only send a key when a new one was uploaded; otherwise leave the stored one.
+    if (form.githubPrivateKey) base.githubPrivateKey = form.githubPrivateKey
+  }
+  return base
+}
+
+const AUTH_METHODS: { value: RepoAuthMethod; label: string }[] = [
+  { value: 'none', label: 'None' },
+  { value: 'pat', label: 'PAT' },
+  { value: 'ssh', label: 'SSH' },
+  { value: 'githubapp', label: 'GitHub App' },
+]
 
 interface InlineFormProps {
   initial: FormState
   onSave: (form: FormState) => void
   onCancel: () => void
   saving: boolean
+  /** Existing repo id — lets Test Connection reuse a stored key when no new PEM is uploaded. */
+  repoId?: string
 }
 
-function InlineForm({ initial, onSave, onCancel, saving }: InlineFormProps) {
+function InlineForm({ initial, onSave, onCancel, saving, repoId }: InlineFormProps) {
   const [form, setForm] = useState<FormState>(initial)
   const testMutation = useTestRepoConnection()
   const [pat, setPat] = useState('')
   const [patStatus, setPatStatus] = useState<'loading' | 'configured' | 'missing'>('loading')
   const [patSaving, setPatSaving] = useState(false)
+  const [keyFileName, setKeyFileName] = useState('')
+
+  const handleKeyFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      setForm((f) => ({ ...f, githubPrivateKey: String(reader.result ?? '') }))
+      setKeyFileName(file.name)
+    }
+    reader.readAsText(file)
+  }
 
   // Check if a PAT is already configured
   useEffect(() => {
@@ -102,12 +155,25 @@ function InlineForm({ initial, onSave, onCancel, saving }: InlineFormProps) {
     }
   }
 
-  const isValid = form.name.trim().length > 0 && form.url.trim().length > 0 && form.defaultBranch.trim().length > 0
-  const canTest = form.url.trim().length > 0
+  const githubAppValid =
+    form.authMethod !== 'githubapp' ||
+    (form.githubAppId.trim().length > 0 && (form.hasGithubKey || form.githubPrivateKey.length > 0))
+  const isValid =
+    form.name.trim().length > 0 &&
+    form.url.trim().length > 0 &&
+    form.defaultBranch.trim().length > 0 &&
+    githubAppValid
+  const canTest = form.url.trim().length > 0 && githubAppValid
 
   const handleTest = () => {
     testMutation.reset()
-    testMutation.mutate({ url: form.url.trim(), authMethod: form.authMethod })
+    testMutation.mutate({
+      url: form.url.trim(),
+      authMethod: form.authMethod,
+      githubAppId: form.githubAppId.trim() || undefined,
+      githubPrivateKey: form.githubPrivateKey || undefined,
+      repoId,
+    })
   }
 
   return (
@@ -157,19 +223,19 @@ function InlineForm({ initial, onSave, onCancel, saving }: InlineFormProps) {
           Authentication
         </label>
         <div className="flex gap-1 p-0.5 rounded-md bg-[var(--bg-primary)] border border-[var(--border)]">
-          {(['none', 'pat', 'ssh'] as const).map((method) => (
+          {AUTH_METHODS.map(({ value, label }) => (
             <button
-              key={method}
+              key={value}
               type="button"
-              onClick={() => setForm((f) => ({ ...f, authMethod: method }))}
+              onClick={() => setForm((f) => ({ ...f, authMethod: value }))}
               className={cn(
-                'flex-1 text-xs py-1.5 rounded-md transition-colors font-medium',
-                form.authMethod === method
+                'flex-1 text-xs py-1.5 rounded-md transition-colors font-medium whitespace-nowrap',
+                form.authMethod === value
                   ? 'bg-[var(--bg-secondary)] text-[var(--text-primary)] shadow-sm'
                   : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
               )}
             >
-              {method === 'none' ? 'None' : method === 'pat' ? 'PAT' : 'SSH'}
+              {label}
             </button>
           ))}
         </div>
@@ -227,6 +293,68 @@ function InlineForm({ initial, onSave, onCancel, saving }: InlineFormProps) {
                 </button>
               </div>
             )}
+          </div>
+        ) : form.authMethod === 'githubapp' ? (
+          <div className="space-y-2">
+            <div className="space-y-1">
+              <label className="block text-xs text-[var(--text-secondary)]">
+                GitHub App ID
+              </label>
+              <Input
+                value={form.githubAppId}
+                onChange={(e) => setForm((f) => ({ ...f, githubAppId: e.target.value }))}
+                placeholder="e.g. 123456"
+                className="font-mono text-xs w-48"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="block text-xs text-[var(--text-secondary)]">
+                Private Key (PEM)
+              </label>
+              {form.hasGithubKey && !form.githubPrivateKey ? (
+                <div className="flex items-center gap-2 text-xs">
+                  <div className="w-2 h-2 rounded-full bg-green-500" />
+                  <span className="text-[var(--text-secondary)]">Private key configured</span>
+                  <label className="text-[var(--accent)] hover:underline ml-1 cursor-pointer">
+                    Replace
+                    <input type="file" accept=".pem,.key,application/x-pem-file" className="hidden" onChange={handleKeyFile} />
+                  </label>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] cursor-pointer hover:text-[var(--text-primary)] text-[var(--text-secondary)]">
+                    <Upload className="h-3 w-3" />
+                    {form.githubPrivateKey ? 'Key loaded' : 'Upload .pem'}
+                    <input type="file" accept=".pem,.key,application/x-pem-file" className="hidden" onChange={handleKeyFile} />
+                  </label>
+                  {keyFileName && (
+                    <span className="text-[10px] text-[var(--text-secondary)] truncate font-mono">{keyFileName}</span>
+                  )}
+                  {form.githubPrivateKey && (
+                    <button
+                      type="button"
+                      onClick={() => { setForm((f) => ({ ...f, githubPrivateKey: '' })); setKeyFileName('') }}
+                      className="text-[var(--text-secondary)] hover:text-red-400"
+                      title="Clear"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+            <p className="text-[10px] text-[var(--text-secondary)] opacity-70">
+              The key is encrypted at rest and never shown again. Requires{' '}
+              <code className="font-mono">CONDUIT_SECRET_KEY</code> to be set on the server.
+            </p>
+            <button
+              type="button"
+              onClick={() => api.shell.openExternal('https://docs.github.com/apps/creating-github-apps').catch(console.error)}
+              className="flex items-center gap-1.5 text-[10px] text-[var(--accent)] hover:underline"
+            >
+              <ExternalLink className="h-3 w-3" />
+              How to create a GitHub App
+            </button>
           </div>
         ) : (
           <p className="text-[10px] text-[var(--text-secondary)] opacity-70">
@@ -300,15 +428,7 @@ function RepoRow({ repo, isOwner, onShare }: RepoRowProps) {
 
   const handleSave = (form: FormState) => {
     updateRepo.mutate(
-      {
-        id: repo.id,
-        data: {
-          name: form.name.trim(),
-          url: form.url.trim(),
-          defaultBranch: form.defaultBranch.trim(),
-          authMethod: form.authMethod,
-        },
-      },
+      { id: repo.id, data: formToInput(form) },
       { onSuccess: () => setEditing(false) }
     )
   }
@@ -328,6 +448,7 @@ function RepoRow({ repo, isOwner, onShare }: RepoRowProps) {
         onSave={handleSave}
         onCancel={() => setEditing(false)}
         saving={updateRepo.isPending}
+        repoId={repo.id}
       />
     )
   }
@@ -440,15 +561,7 @@ export function RepositoryManager() {
   const [shareRepoId, setShareRepoId] = useState<string | null>(null)
 
   const handleCreate = (form: FormState) => {
-    createRepo.mutate(
-      {
-        name: form.name.trim(),
-        url: form.url.trim(),
-        defaultBranch: form.defaultBranch.trim(),
-        authMethod: form.authMethod,
-      },
-      { onSuccess: () => setShowAddForm(false) }
-    )
+    createRepo.mutate(formToInput(form), { onSuccess: () => setShowAddForm(false) })
   }
 
   const myRepos = repos.filter((r) => r.ownerId === user?.id)

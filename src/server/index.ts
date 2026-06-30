@@ -42,6 +42,8 @@ import {
   deleteRepository,
 } from '../main/db/queries/repositories'
 import { RepoSyncService } from './repoSync'
+import { encryptSecret } from './crypto'
+import { mintInstallationToken, resolveRepoToken } from './githubApp'
 import { testPublishTarget } from './publisher'
 import {
   listTriggers,
@@ -73,6 +75,8 @@ import type {
   GlobalMcpServer,
   PublishTarget,
   Repository,
+  RepositoryInput,
+  RepoTestConnectionInput,
   RunnerType,
   Trigger,
   RequestContext,
@@ -152,6 +156,52 @@ app.get('*', (_req, res) => {
 })
 
 // ─── Channel handlers ─────────────────────────────────────────────────────────
+
+/**
+ * Convert a client-facing repository payload into the persistence-layer shape:
+ * the raw GitHub App private key (write-only) is encrypted into
+ * `githubPrivateKeyEnc`. An absent/blank key is dropped so the stored key is
+ * left untouched on update.
+ */
+function withEncryptedKey<T extends Partial<RepositoryInput>>(
+  data: T
+): Omit<T, 'githubPrivateKey'> & { githubPrivateKeyEnc?: string } {
+  const { githubPrivateKey, ...rest } = data
+  const result = { ...rest } as Omit<T, 'githubPrivateKey'> & { githubPrivateKeyEnc?: string }
+  if (typeof githubPrivateKey === 'string' && githubPrivateKey.trim()) {
+    result.githubPrivateKeyEnc = encryptSecret(githubPrivateKey.trim())
+  }
+  return result
+}
+
+/**
+ * Resolve the credential token for a connection test. For GitHub App auth this
+ * mints from the PEM supplied in the form, or — when none is supplied — falls
+ * back to the key already stored for an existing repo.
+ */
+async function resolveTestToken(input: RepoTestConnectionInput): Promise<string | undefined> {
+  switch (input.authMethod) {
+    case 'pat':
+      return getGithubPat()
+    case 'githubapp':
+      if (input.githubPrivateKey && input.githubPrivateKey.trim()) {
+        if (!input.githubAppId) throw new Error('A GitHub App ID is required.')
+        return mintInstallationToken({
+          // Trim to match how the key is stored (encryptSecret trims) so a
+          // successful test reflects the value that will actually be persisted.
+          appId: input.githubAppId,
+          privateKey: input.githubPrivateKey.trim(),
+          repoUrl: input.url,
+        })
+      }
+      if (input.repoId) {
+        return resolveRepoToken({ id: input.repoId, url: input.url, authMethod: 'githubapp' })
+      }
+      throw new Error('Upload a GitHub App private key to test this connection.')
+    default:
+      return undefined
+  }
+}
 
 type HandlerFn = (args: unknown[], ws: WebSocket, ctx: RequestContext) => Promise<unknown>
 
@@ -254,7 +304,7 @@ const handlers: Record<string, HandlerFn> = {
   'repos:get': ([id]) => Promise.resolve(getRepository(id as string)),
   'repos:create': async ([data], _ws, ctx) => {
     const repo = await createRepository(
-      data as Omit<Repository, 'id' | 'createdAt' | 'updatedAt' | 'syncStatus' | 'clonePath'>,
+      withEncryptedKey(data as RepositoryInput),
       ctx.userId
     )
     repoSyncService.triggerSync(repo.id).catch((err) =>
@@ -266,12 +316,16 @@ const handlers: Record<string, HandlerFn> = {
     if (!(await canAccessEntity('repository', id as string, ctx.userId, ctx.userGroupIds))) {
       throw new Error('Access denied')
     }
-    return Promise.resolve(
-      updateRepository(
-        id as string,
-        data as Partial<Omit<Repository, 'id' | 'createdAt' | 'updatedAt'>>
-      )
-    )
+    // GitHub App credentials are sensitive secrets — only the owner may set or
+    // change them, even though shared users can edit other repo fields.
+    const input = data as Partial<RepositoryInput>
+    if (
+      (input.githubAppId !== undefined || input.githubPrivateKey !== undefined) &&
+      !(await isEntityOwner('repository', id as string, ctx.userId))
+    ) {
+      throw new Error('Only the owner can change GitHub App credentials')
+    }
+    return Promise.resolve(updateRepository(id as string, withEncryptedKey(input)))
   },
   'repos:delete': async ([id], _ws, ctx) => {
     if (!(await isEntityOwner('repository', id as string, ctx.userId))) {
@@ -283,12 +337,20 @@ const handlers: Record<string, HandlerFn> = {
   'repos:triggerSync': async ([id]) => {
     await repoSyncService.triggerSync(id as string)
   },
-  'repos:testConnection': async ([data]) => {
+  'repos:testConnection': async ([data], _ws, ctx) => {
     const { testRepoConnection } = await import('./gitOps')
-    const { url, authMethod } = data as { url: string; authMethod: 'none' | 'pat' | 'ssh' }
-    const pat = authMethod === 'pat' ? getGithubPat() : undefined
+    const input = data as RepoTestConnectionInput
+    // When testing against a stored key, ensure the caller can actually access
+    // that repo — otherwise its credentials could be exercised by anyone.
+    if (
+      input.repoId &&
+      !(await canAccessEntity('repository', input.repoId, ctx.userId, ctx.userGroupIds))
+    ) {
+      return { success: false, message: 'Access denied' }
+    }
     try {
-      const message = await testRepoConnection(url, pat)
+      const token = await resolveTestToken(input)
+      const message = await testRepoConnection(input.url, token)
       return { success: true, message }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)

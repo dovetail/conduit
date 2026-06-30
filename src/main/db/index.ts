@@ -217,6 +217,8 @@ export async function initDb(): Promise<void> {
       last_synced_at BIGINT,
       clone_path TEXT,
       owner_id TEXT,
+      github_app_id TEXT,
+      github_private_key_enc TEXT,
       created_at BIGINT NOT NULL,
       updated_at BIGINT NOT NULL
     );
@@ -226,6 +228,8 @@ export async function initDb(): Promise<void> {
     ALTER TABLE global_mcp_servers ADD COLUMN IF NOT EXISTS owner_id TEXT;
     ALTER TABLE publish_targets ADD COLUMN IF NOT EXISTS owner_id TEXT;
     ALTER TABLE repositories ADD COLUMN IF NOT EXISTS owner_id TEXT;
+    ALTER TABLE repositories ADD COLUMN IF NOT EXISTS github_app_id TEXT;
+    ALTER TABLE repositories ADD COLUMN IF NOT EXISTS github_private_key_enc TEXT;
     ALTER TABLE runs ADD COLUMN IF NOT EXISTS started_by TEXT;
   `)
 }

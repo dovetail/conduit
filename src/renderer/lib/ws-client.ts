@@ -9,6 +9,8 @@ import type {
   GlobalMcpServer,
   PublishTarget,
   Repository,
+  RepositoryInput,
+  RepoTestConnectionInput,
   Trigger,
   TriggerFiredPayload,
   OAuthToken,
@@ -200,15 +202,13 @@ export function createWsConduitClient(wsUrl: string): ConduitAPI {
     repos: {
       list: () => invoke<Repository[]>('repos:list'),
       get: (id: string) => invoke<Repository | null>('repos:get', id),
-      create: (data: Omit<Repository, 'id' | 'createdAt' | 'updatedAt' | 'syncStatus' | 'clonePath'>) =>
+      create: (data: RepositoryInput) =>
         invoke<Repository>('repos:create', data),
-      update: (
-        id: string,
-        data: Partial<Omit<Repository, 'id' | 'createdAt' | 'updatedAt'>>
-      ) => invoke<Repository>('repos:update', id, data),
+      update: (id: string, data: Partial<RepositoryInput>) =>
+        invoke<Repository>('repos:update', id, data),
       delete: (id: string) => invoke<void>('repos:delete', id),
       triggerSync: (id: string) => invoke<void>('repos:triggerSync', id),
-      testConnection: (data: { url: string; authMethod: 'none' | 'pat' | 'ssh' }) =>
+      testConnection: (data: RepoTestConnectionInput) =>
         invoke<{ success: boolean; message: string }>('repos:testConnection', data),
     },
 
