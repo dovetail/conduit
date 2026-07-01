@@ -22,17 +22,22 @@ import { useMcpOAuthProbe } from '@renderer/hooks/useMcpOAuth'
 import { api } from '@renderer/lib/ipc'
 import type { GlobalMcpServer, McpServerEntry, McpOAuthConfig } from '@shared/types'
 
-async function maybeKickOAuth(server: GlobalMcpServer) {
-  const cfg = server.serverConfig
+/**
+ * If a URL MCP server supports OAuth and isn't already connected, start the auth
+ * flow and open the authorization window. No-op for stdio servers, non-OAuth
+ * servers, or servers with a still-valid token. Best-effort — the popup may be
+ * blocked, in which case the Authenticate button remains as the reliable fallback.
+ */
+async function maybeKickOAuth(serverId: string, cfg: McpServerEntry) {
   if (!((cfg.type === 'url' || cfg.url) && cfg.url)) return
   try {
     const probe = cfg.oauth ? { supportsOAuth: true } : await api.mcpOAuth.probe(cfg)
     if (!probe.supportsOAuth) return
-    const status = await api.mcpOAuth.getStatus(server.id, true)
+    const status = await api.mcpOAuth.getStatus(serverId, true)
     const valid = status.connected && (status.expiresAt === undefined || status.expiresAt > Date.now())
     if (valid) return
-    const { authUrl } = await api.mcpOAuth.startAuth(server.id, true)
-    window.open(authUrl, '_blank', 'noopener,noreferrer') // best-effort; may be popup-blocked
+    const { authUrl } = await api.mcpOAuth.startAuth(serverId, true)
+    window.open(authUrl, '_blank', 'noopener,noreferrer')
   } catch {
     // Non-fatal: the Authenticate button remains visible as the reliable fallback.
   }
@@ -58,9 +63,18 @@ function McpHealthDot({ serverId, serverConfig }: { serverId: string; serverConf
     ? `Authentication required · ${data.message}`
     : `Not connected · ${data?.message ?? 'Unknown error'}`
 
+  const handleRefresh = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    const res = await refetch()
+    // If the server needs authentication, launch the OAuth flow just like Save does.
+    if (res.data?.status === 'unauthorized') {
+      void maybeKickOAuth(serverId, serverConfig)
+    }
+  }
+
   return (
     <button
-      onClick={(e) => { e.stopPropagation(); refetch() }}
+      onClick={handleRefresh}
       title={label}
       className="flex items-center gap-1 flex-shrink-0 group"
       aria-label={label}
@@ -412,7 +426,7 @@ function ServerRow({ server, isDark, isOwner, onShare }: ServerRowProps) {
       {
         onSuccess: (saved) => {
           setEditing(false)
-          void maybeKickOAuth(saved)
+          void maybeKickOAuth(saved.id, saved.serverConfig)
         },
       }
     )
@@ -578,7 +592,7 @@ export function GlobalMcpManager() {
       {
         onSuccess: (saved) => {
           setShowAddForm(false)
-          void maybeKickOAuth(saved)
+          void maybeKickOAuth(saved.id, saved.serverConfig)
         },
       }
     )
