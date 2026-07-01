@@ -7,6 +7,7 @@ import {
   useRevokeMcpToken,
   useMcpOAuthListener,
 } from '@renderer/hooks/useMcpOAuth'
+import { useMcpHealth } from '@renderer/hooks/useMcpHealth'
 import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '@renderer/lib/utils'
 
@@ -25,6 +26,11 @@ export function McpOAuthButton({ serverId, isGlobal, serverUrl, serverName }: Mc
   const [lastError, setLastError] = useState<string | null>(null)
 
   const { data: status, isLoading } = useMcpStatus(serverId, isGlobal)
+  // Real connectivity — an authenticated request actually succeeding — is the
+  // source of truth, not whether a token row merely exists (which can be a
+  // stale or shared-URL token). Shares the ['mcpHealth', serverId] cache with
+  // the health dot.
+  const { data: health, isLoading: healthLoading } = useMcpHealth(serverId, { type: 'url', url: serverUrl })
   const startAuth = useStartMcpAuth()
   const revoke = useRevokeMcpToken()
 
@@ -34,6 +40,7 @@ export function McpOAuthButton({ serverId, isGlobal, serverUrl, serverName }: Mc
       setAuthInProgress(false)
       setLastError(result.success ? null : result.error ?? 'Authentication failed')
       queryClient.invalidateQueries({ queryKey: ['mcpOAuthStatus', serverId] })
+      queryClient.invalidateQueries({ queryKey: ['mcpHealth', serverId] })
     },
     [serverUrl, serverId, queryClient]
   )
@@ -48,9 +55,13 @@ export function McpOAuthButton({ serverId, isGlobal, serverUrl, serverName }: Mc
     )
   }
 
-  const handleRevoke = () => revoke.mutate({ serverId, isGlobal })
+  const handleRevoke = () =>
+    revoke.mutate(
+      { serverId, isGlobal },
+      { onSuccess: () => queryClient.invalidateQueries({ queryKey: ['mcpHealth', serverId] }) }
+    )
 
-  if (isLoading) {
+  if (isLoading || (healthLoading && !health)) {
     return (
       <div className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]">
         <Loader2 className="h-3.5 w-3.5 animate-spin" /><span>Checking…</span>
@@ -58,8 +69,11 @@ export function McpOAuthButton({ serverId, isGlobal, serverUrl, serverName }: Mc
     )
   }
 
-  const isExpired = status?.expiresAt !== undefined && status.expiresAt <= Date.now()
-  const isValid = !!status?.connected && !isExpired
+  // Authenticated only if a real authenticated request succeeds. A token row that
+  // exists but doesn't actually authenticate (expired, revoked server-side, or a
+  // shared-URL token for a different app) reads as needing authentication.
+  const isValid = health?.status === 'healthy'
+  const hasStaleToken = !!status?.connected && !isValid
   const connectedBy = status?.connectedByName
 
   return (
@@ -87,10 +101,10 @@ export function McpOAuthButton({ serverId, isGlobal, serverUrl, serverName }: Mc
             Revoke
           </button>
         </>
-      ) : isExpired ? (
+      ) : hasStaleToken ? (
         <Button size="sm" variant="outline" onClick={handleAuthenticate}
           className="gap-1.5 text-amber-500 border-amber-500/30 hover:bg-amber-500/10 hover:text-amber-400"
-          title={`Token for ${serverName} has expired — re-authenticate`}>
+          title={`${serverName} is not authenticated (server returned 401) — re-authenticate`}>
           <AlertTriangle className="h-3.5 w-3.5" />Re-authenticate
         </Button>
       ) : (

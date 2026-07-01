@@ -344,7 +344,21 @@ const handlers: Record<string, HandlerFn> = {
   },
 
   'globalMcps:listTools': async ([serverConfig]) => {
-    return listMcpTools(serverConfig as import('../shared/types').McpServerEntry)
+    let config = serverConfig as import('../shared/types').McpServerEntry
+    // Inject the stored global OAuth token so tools load for authenticated
+    // servers instead of 401ing on the initialize call.
+    if (isUrlMcpServer(config) && config.url) {
+      try {
+        const { resolveGlobalMcpToken } = await import('../main/utils/mcp')
+        const token = await resolveGlobalMcpToken(config.url)
+        if (token) {
+          config = { ...config, headers: { ...config.headers, Authorization: `${token.tokenType} ${token.accessToken}` } }
+        }
+      } catch {
+        // No token — list unauthenticated (will surface the server's own error).
+      }
+    }
+    return listMcpTools(config)
   },
 
   // Repositories
