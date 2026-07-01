@@ -54,6 +54,8 @@ import {
 } from '../main/db/queries/triggers'
 import { TriggerService } from './triggers/triggerService'
 import { createTriggerRoutes } from './triggers/triggerRoutes'
+import { createMcpOAuthRouter } from './mcpOAuth/routes'
+import { startAuth as mcpStartAuth, getStatus as mcpGetStatus, revoke as mcpRevoke } from './mcpOAuth/service'
 import { listMcpTools } from './mcpTools'
 import { getGithubPat } from './store'
 import { readLogFile } from './utils'
@@ -153,6 +155,9 @@ const triggerService = new TriggerService(broadcast)
 
 // Inbound trigger HTTP endpoints. Registered before SPA catch-all but after triggerService.
 app.use('/api/triggers', express.json({ limit: '1mb' }), createTriggerRoutes(triggerService))
+
+// MCP OAuth callback route — must be registered before the SPA catch-all
+app.use('/mcp/oauth', createMcpOAuthRouter(broadcast))
 
 // SPA fallback — all other GETs serve index.html
 app.get('*', (_req, res) => {
@@ -553,6 +558,14 @@ const handlers: Record<string, HandlerFn> = {
 
   // Groups
   'groups:list': () => Promise.resolve(listGroups()),
+
+  // MCP OAuth
+  'mcp:oauth:startAuth': ([serverId, isGlobal], _ws, ctx) =>
+    mcpStartAuth(serverId as string, isGlobal as boolean, ctx.userId, ctx.userGroupIds),
+  'mcp:oauth:getStatus': ([serverId, isGlobal], _ws, ctx) =>
+    mcpGetStatus(serverId as string, isGlobal as boolean, ctx.userId, ctx.userGroupIds),
+  'mcp:oauth:revoke': ([serverId, isGlobal], _ws, ctx) =>
+    mcpRevoke(serverId as string, isGlobal as boolean, ctx.userId, ctx.userGroupIds),
 }
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
