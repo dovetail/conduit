@@ -121,9 +121,11 @@ interface InlineFormProps {
   saving: boolean
   /** Existing repo id — lets Test Connection reuse a stored key when no new PEM is uploaded. */
   repoId?: string
+  /** Server-side save error (e.g. missing CONDUIT_SECRET_KEY when saving a GitHub App key). */
+  saveError?: string | null
 }
 
-function InlineForm({ initial, onSave, onCancel, saving, repoId }: InlineFormProps) {
+function InlineForm({ initial, onSave, onCancel, saving, repoId, saveError }: InlineFormProps) {
   const [form, setForm] = useState<FormState>(initial)
   const testMutation = useTestRepoConnection()
   const [pat, setPat] = useState('')
@@ -414,6 +416,11 @@ function InlineForm({ initial, onSave, onCancel, saving, repoId }: InlineFormPro
           Test failed: {testMutation.error instanceof Error ? testMutation.error.message : String(testMutation.error)}
         </div>
       )}
+      {saveError && (
+        <div className="text-xs px-3 py-2 rounded-md bg-red-500/10 text-red-400 border border-red-500/20">
+          Save failed: {saveError}
+        </div>
+      )}
 
       {/* Actions */}
       <div className="flex items-center justify-between pt-1">
@@ -482,6 +489,7 @@ function RepoRow({ repo, isOwner, onShare }: RepoRowProps) {
         onCancel={() => setEditing(false)}
         saving={updateRepo.isPending}
         repoId={repo.id}
+        saveError={updateRepo.error instanceof Error ? updateRepo.error.message : null}
       />
     )
   }
@@ -639,6 +647,7 @@ export function RepositoryManager() {
             onSave={handleCreate}
             onCancel={() => setShowAddForm(false)}
             saving={createRepo.isPending}
+            saveError={createRepo.error instanceof Error ? createRepo.error.message : null}
           />
         )}
 
