@@ -54,12 +54,29 @@ export const shares = pgTable('shares', {
 // ── Existing Tables ────────────────────────────────────────────────────────
 
 export const oauthTokens = pgTable('oauth_tokens', {
-  serverUrl: text('server_url').primaryKey(),
-  accessToken: text('access_token').notNull(),
-  refreshToken: text('refresh_token'),
+  serverUrl: text('server_url').notNull(),
+  // userId for personal tokens; '__global__' for shared/global MCP tokens.
+  tokenOwner: text('token_owner').notNull().default('__global__'),
+  // The real user who authorized this token (for display), even for global.
+  connectedByUserId: text('connected_by_user_id'),
+  accessToken: text('access_token').notNull(),   // encrypted at rest
+  refreshToken: text('refresh_token'),            // encrypted at rest
   expiresAt: bigint('expires_at', { mode: 'number' }),
   tokenType: text('token_type').notNull().default('Bearer'),
   scope: text('scope'),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.serverUrl, table.tokenOwner] }),
+}))
+
+export const mcpOAuthClients = pgTable('mcp_oauth_clients', {
+  serverUrl: text('server_url').primaryKey(),
+  clientId: text('client_id').notNull(),
+  clientSecretEnc: text('client_secret_enc'),      // encrypted; null for public clients
+  authorizationEndpoint: text('authorization_endpoint').notNull(),
+  tokenEndpoint: text('token_endpoint').notNull(),
+  registrationData: text('registration_data'),     // raw DCR response JSON
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
 })
 
 export const agents = pgTable('agents', {
