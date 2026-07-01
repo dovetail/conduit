@@ -44,6 +44,7 @@ import {
 import { RepoSyncService } from './repoSync'
 import { encryptSecret } from './crypto'
 import { mintInstallationToken, resolveRepoToken } from './githubApp'
+import { isUrlMcpServer } from '../shared/mcp'
 import { testPublishTarget } from './publisher'
 import {
   listTriggers,
@@ -274,9 +275,8 @@ const handlers: Record<string, HandlerFn> = {
 
   'globalMcps:checkHealth': async ([serverConfig]) => {
     const config = serverConfig as import('../shared/types').McpServerEntry
-    const isUrl = config.type === 'url' || !!config.url
 
-    if (isUrl && config.url) {
+    if (isUrlMcpServer(config) && config.url) {
       try {
         const controller = new AbortController()
         const timeout = setTimeout(() => controller.abort(), 4000)

@@ -86,10 +86,18 @@ export interface McpOAuthConfig {
   scopes: string[]
 }
 
+/**
+ * MCP transport type. Remote servers carry a `url` and may be declared as
+ * 'url', 'http', 'streamable-http', or 'sse' depending on the client; 'stdio'
+ * launches a local `command`. Use `isUrlMcpServer` rather than comparing to a
+ * single literal — see src/shared/mcp.ts.
+ */
+export type McpTransportType = 'url' | 'http' | 'streamable-http' | 'sse' | 'stdio'
+
 export interface McpServerEntry {
   command?: string
   args?: string[]
-  type?: 'url' | 'stdio'
+  type?: McpTransportType
   url?: string
   headers?: Record<string, string>
   env?: Record<string, string>

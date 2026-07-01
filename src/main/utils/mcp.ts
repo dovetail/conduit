@@ -6,6 +6,7 @@ import { listEnabledGlobalMcps } from '../db/queries/globalMcps'
 import { getToken, saveToken } from '../db/queries/oauthTokens'
 import { getClient } from '../db/queries/mcpOAuthClients'
 import { refreshAccessToken } from '../../server/mcpOAuth/flow'
+import { isUrlMcpServer } from '../../shared/mcp'
 
 const GLOBAL_OWNER = '__global__'
 
@@ -18,7 +19,7 @@ export async function buildMergedMcpConfig(
   const globalUrls = new Set<string>()
   for (const g of globalMcps) {
     globalServers[g.serverKey] = g.serverConfig
-    if (g.serverConfig.type === 'url' && g.serverConfig.url) globalUrls.add(g.serverConfig.url)
+    if (isUrlMcpServer(g.serverConfig)) globalUrls.add(g.serverConfig.url!)
   }
   return {
     config: { mcpServers: { ...globalServers, ...agentMcpConfig.mcpServers } },
@@ -57,9 +58,9 @@ export async function injectOAuthTokens(
 ): Promise<McpServersConfig> {
   const updated: Record<string, McpServerEntry> = {}
   for (const [key, entry] of Object.entries(config.mcpServers)) {
-    if (entry.type === 'url' && entry.url) {
-      const owner = globalUrls.has(entry.url) ? GLOBAL_OWNER : actingUserId
-      const token = await resolveValidToken(entry.url, owner)
+    if (isUrlMcpServer(entry)) {
+      const owner = globalUrls.has(entry.url!) ? GLOBAL_OWNER : actingUserId
+      const token = await resolveValidToken(entry.url!, owner)
       if (token) {
         updated[key] = {
           ...entry,

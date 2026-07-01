@@ -7,6 +7,7 @@ import { getTokenStatus, saveToken, deleteToken, getConnectedByUserId } from '..
 import { discoverOAuthEndpoints, ensureRegisteredClient } from './discovery'
 import { generatePkce, buildAuthorizationUrl, exchangeCode } from './flow'
 import { putPending, takePending } from './state'
+import { isUrlMcpServer } from '../../shared/mcp'
 
 const GLOBAL_OWNER = '__global__'
 
@@ -29,15 +30,15 @@ export async function resolveServerTarget(serverId: string, isGlobal: boolean, u
     const g = await getGlobalMcp(serverId)
     if (!g) throw new Error(`Global MCP server ${serverId} not found`)
     const cfg = g.serverConfig
-    if (cfg.type !== 'url' || !cfg.url) throw new Error('MCP server is not a URL-type server')
-    return { serverUrl: cfg.url, oauthConfig: cfg.oauth, tokenOwner: GLOBAL_OWNER, scope: 'global', parentEntityType: 'globalMcpServer', parentEntityId: g.id }
+    if (!isUrlMcpServer(cfg)) throw new Error('MCP server is not a URL-type server')
+    return { serverUrl: cfg.url!, oauthConfig: cfg.oauth, tokenOwner: GLOBAL_OWNER, scope: 'global', parentEntityType: 'globalMcpServer', parentEntityId: g.id }
   }
   const [agentId, serverKey] = serverId.split(':')
   const agent = await getAgent(agentId)
   if (!agent) throw new Error(`Agent ${agentId} not found`)
   const entry: McpServerEntry | undefined = agent.mcpConfig.mcpServers[serverKey]
-  if (!entry || entry.type !== 'url' || !entry.url) throw new Error(`Agent MCP server ${serverKey} is not a URL-type server`)
-  return { serverUrl: entry.url, oauthConfig: entry.oauth, tokenOwner: userId, scope: 'user', parentEntityType: 'agent', parentEntityId: agentId }
+  if (!isUrlMcpServer(entry)) throw new Error(`Agent MCP server ${serverKey} is not a URL-type server`)
+  return { serverUrl: entry!.url!, oauthConfig: entry!.oauth, tokenOwner: userId, scope: 'user', parentEntityType: 'agent', parentEntityId: agentId }
 }
 
 async function assertAccess(t: ServerTarget, userId: string, userGroupIds: string[]): Promise<void> {
@@ -94,16 +95,16 @@ export async function revoke(serverId: string, isGlobal: boolean, userId: string
 }
 
 export async function probeOAuthSupport(config: McpServerEntry): Promise<McpOAuthProbeResult> {
-  if ((config.type && config.type !== 'url') || !config.url) {
+  if (!isUrlMcpServer(config)) {
     return { supportsOAuth: false, supportsDcr: false }
   }
   try {
-    const meta = await discoverOAuthEndpoints(config.url)
+    const meta = await discoverOAuthEndpoints(config.url!)
     return { supportsOAuth: true, supportsDcr: !!meta.registration_endpoint }
   } catch {
     // Discovery failed — do a lightweight probe to detect 401/403.
     try {
-      const res = await fetch(config.url, {
+      const res = await fetch(config.url!, {
         method: 'GET',
         headers: { Accept: '*/*' },
         signal: AbortSignal.timeout(5000),

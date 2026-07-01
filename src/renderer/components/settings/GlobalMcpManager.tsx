@@ -20,6 +20,7 @@ import { cn } from '@renderer/lib/utils'
 import { McpOAuthButton } from './McpOAuthButton'
 import { useMcpOAuthProbe } from '@renderer/hooks/useMcpOAuth'
 import { api } from '@renderer/lib/ipc'
+import { isUrlMcpServer } from '@shared/mcp'
 import type { GlobalMcpServer, McpServerEntry, McpOAuthConfig } from '@shared/types'
 
 /**
@@ -29,7 +30,7 @@ import type { GlobalMcpServer, McpServerEntry, McpOAuthConfig } from '@shared/ty
  * blocked, in which case the Authenticate button remains as the reliable fallback.
  */
 async function maybeKickOAuth(serverId: string, cfg: McpServerEntry) {
-  if (!((cfg.type === 'url' || cfg.url) && cfg.url)) return
+  if (!isUrlMcpServer(cfg)) return
   try {
     const probe = cfg.oauth ? { supportsOAuth: true } : await api.mcpOAuth.probe(cfg)
     if (!probe.supportsOAuth) return
@@ -37,9 +38,14 @@ async function maybeKickOAuth(serverId: string, cfg: McpServerEntry) {
     const valid = status.connected && (status.expiresAt === undefined || status.expiresAt > Date.now())
     if (valid) return
     const { authUrl } = await api.mcpOAuth.startAuth(serverId, true)
-    window.open(authUrl, '_blank', 'noopener,noreferrer')
-  } catch {
-    // Non-fatal: the Authenticate button remains visible as the reliable fallback.
+    const win = window.open(authUrl, '_blank', 'noopener,noreferrer')
+    if (!win) {
+      // Popup blocked — the Authenticate button remains as the reliable fallback.
+      console.warn('[mcp] OAuth popup was blocked by the browser; use the Authenticate button.')
+    }
+  } catch (err) {
+    // Surface the failure (was previously silent) so auth problems are diagnosable.
+    console.error('[mcp] failed to start OAuth flow:', err)
   }
 }
 
@@ -155,8 +161,7 @@ function parseServerConfig(text: string): { value: McpServerEntry | null; error:
 }
 
 function getServerType(config: McpServerEntry): string {
-  if (config.type === 'url' || config.url) return 'url'
-  return 'stdio'
+  return isUrlMcpServer(config) ? 'url' : 'stdio'
 }
 
 interface InlineFormProps {
