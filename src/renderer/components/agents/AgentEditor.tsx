@@ -7,7 +7,7 @@ import { EnvVarEditor } from './EnvVarEditor'
 import { McpEditor } from './McpEditor'
 import { TriggerEditor } from './TriggerEditor'
 import { ShareDialog } from '@renderer/components/ShareDialog'
-import { useAgent, useUpdateAgent } from '@renderer/hooks/useAgents'
+import { useAgent, useUpdateAgent, useRunnerClis } from '@renderer/hooks/useAgents'
 import { usePublishTargets } from '@renderer/hooks/usePublishTargets'
 import { useRepositories, useRepoSyncEvents } from '@renderer/hooks/useRepositories'
 import { useUIStore } from '@renderer/store/ui'
@@ -50,17 +50,24 @@ function RunnerPicker({
   value: RunnerType
   onChange: (r: RunnerType) => void
 }) {
+  const { data: clis } = useRunnerClis()
   return (
     <div className="flex gap-2">
       {RUNNER_OPTIONS.map((opt) => {
         const Logo = RunnerLogos[opt.value]
         const active = value === opt.value
+        const cli = clis?.find((c) => c.runner === opt.value)
+        const cliTitle = !cli
+          ? 'Checking CLI availability…'
+          : cli.installed
+          ? `${cli.binary} CLI found${cli.path ? ` at ${cli.path}` : ''}`
+          : `${cli.binary} CLI not found in PATH — this runner won't work`
         return (
           <button
             key={opt.value}
             type="button"
             onClick={() => onChange(opt.value)}
-            className="flex flex-col items-center gap-1.5 rounded-xl px-4 py-3 transition-all duration-150 flex-1 group"
+            className="relative flex flex-col items-center gap-1.5 rounded-xl px-4 py-3 transition-all duration-150 flex-1 group"
             style={{
               background: active ? 'var(--accent)' : 'var(--bg-secondary)',
               border: `1.5px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
@@ -68,6 +75,14 @@ function RunnerPicker({
               boxShadow: active ? '0 2px 12px rgba(129,140,248,0.35)' : 'none',
             }}
           >
+            {/* CLI availability indicator */}
+            {cli && (
+              <span
+                title={cliTitle}
+                className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full"
+                style={{ backgroundColor: cli.installed ? '#22C55E' : '#EF4444' }}
+              />
+            )}
             <span style={{ opacity: active ? 1 : 0.6 }} className="transition-opacity group-hover:opacity-100">
               <Logo size={20} active={active} />
             </span>
@@ -75,6 +90,9 @@ function RunnerPicker({
               {opt.label}
             </span>
             <span className="text-[9px] opacity-60 leading-none">{opt.description}</span>
+            {cli && !cli.installed && (
+              <span className="text-[8px] leading-none text-red-400 font-medium">not installed</span>
+            )}
           </button>
         )
       })}

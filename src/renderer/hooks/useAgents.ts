@@ -11,6 +11,17 @@ export function useAgents() {
   })
 }
 
+/** Which runner CLIs (claude/amp/cursor) are installed and on the server's PATH. */
+export function useRunnerClis() {
+  return useQuery({
+    queryKey: ['runnerClis'],
+    queryFn: () => api.runners.checkCli(),
+    staleTime: 60_000,
+    gcTime: 5 * 60_000,
+    retry: 0,
+  })
+}
+
 export function useAgent(id: string) {
   return useQuery({
     queryKey: ['agents', id],

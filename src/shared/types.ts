@@ -3,6 +3,16 @@ export type RunnerType = 'claude' | 'amp' | 'cursor'
 /** Reasoning effort for the Claude runner (maps to the `claude --effort <level>` flag). */
 export type RunnerEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
+/** Whether a runner's CLI binary is installed and on the server's PATH. */
+export interface RunnerCliStatus {
+  runner: RunnerType
+  /** The binary name checked (e.g. 'claude', 'amp', 'cursor-agent'). */
+  binary: string
+  installed: boolean
+  /** Resolved path when installed. */
+  path?: string
+}
+
 // ── Auth & Users ───────────────────────────────────────────────────────────
 
 export interface User {
@@ -426,6 +436,10 @@ export interface ConduitAPI {
     delete: (id: string) => Promise<void>
     checkHealth: (serverConfig: McpServerEntry) => Promise<McpHealthResult>
     listTools: (serverConfig: McpServerEntry) => Promise<McpToolsResult>
+  }
+  runners: {
+    /** Report which runner CLIs are installed and on the server's PATH. */
+    checkCli: () => Promise<RunnerCliStatus[]>
   }
   repos: {
     list: () => Promise<Repository[]>

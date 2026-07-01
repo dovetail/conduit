@@ -214,6 +214,10 @@ export function createWsConduitClient(wsUrl: string): ConduitAPI {
         invoke<{ success: boolean; message: string }>('repos:testConnection', data),
     },
 
+    runners: {
+      checkCli: () => invoke<import('@shared/types').RunnerCliStatus[]>('runners:checkCli'),
+    },
+
     onRepoSyncStatus: (cb: (payload: RepoSyncStatusPayload) => void): (() => void) => {
       repoSyncStatusListeners.add(cb)
       return () => repoSyncStatusListeners.delete(cb)

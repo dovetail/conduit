@@ -306,6 +306,31 @@ const handlers: Record<string, HandlerFn> = {
     }
   },
 
+  'runners:checkCli': async () => {
+    const { execFile } = await import('child_process')
+    const { promisify } = await import('util')
+    const run = promisify(execFile)
+    // Binary each runner shells out to (see server/runner.ts spawn). Cursor's
+    // headless agent binary is `cursor-agent`.
+    const RUNNER_BINARIES: Record<import('../shared/types').RunnerType, string> = {
+      claude: 'claude',
+      amp: 'amp',
+      cursor: 'cursor-agent',
+    }
+    const runners = Object.keys(RUNNER_BINARIES) as import('../shared/types').RunnerType[]
+    return Promise.all(
+      runners.map(async (runner) => {
+        const binary = RUNNER_BINARIES[runner]
+        try {
+          const { stdout } = await run('which', [binary])
+          return { runner, binary, installed: true, path: stdout.trim() }
+        } catch {
+          return { runner, binary, installed: false }
+        }
+      })
+    )
+  },
+
   'globalMcps:listTools': async ([serverConfig]) => {
     return listMcpTools(serverConfig as import('../shared/types').McpServerEntry)
   },
