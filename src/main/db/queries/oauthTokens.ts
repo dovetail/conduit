@@ -38,16 +38,17 @@ export async function saveToken(
     tokenType: token.tokenType,
     scope: token.scope ?? null,
   }
+  const updateSet: Partial<typeof oauthTokens.$inferInsert> = {
+    accessToken: values.accessToken,
+    refreshToken: values.refreshToken,
+    expiresAt: values.expiresAt,
+    tokenType: values.tokenType,
+    scope: values.scope,
+  }
+  if (connectedByUserId !== null) updateSet.connectedByUserId = connectedByUserId
   await getDb().insert(oauthTokens).values(values).onConflictDoUpdate({
     target: [oauthTokens.serverUrl, oauthTokens.tokenOwner],
-    set: {
-      connectedByUserId,
-      accessToken: values.accessToken,
-      refreshToken: values.refreshToken,
-      expiresAt: values.expiresAt,
-      tokenType: values.tokenType,
-      scope: values.scope,
-    },
+    set: updateSet,
   })
 }
 

@@ -40,7 +40,7 @@ function tokenResponseToOAuthToken(serverUrl: string, data: Record<string, unkno
   }
 }
 
-async function postToken(tokenEndpoint: string, params: URLSearchParams, clientSecret?: string): Promise<Record<string, unknown>> {
+async function postToken(tokenEndpoint: string, params: URLSearchParams): Promise<Record<string, unknown>> {
   const headers: Record<string, string> = { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' }
   const res = await fetch(tokenEndpoint, { method: 'POST', headers, body: params.toString(), signal: AbortSignal.timeout(10000) })
   if (!res.ok) throw new Error(`Token request failed (${res.status}): ${await res.text()}`)
@@ -59,7 +59,7 @@ export async function exchangeCode(a: {
     code_verifier: a.verifier,
   })
   if (a.clientSecret) params.set('client_secret', a.clientSecret)
-  return tokenResponseToOAuthToken(a.serverUrl, await postToken(a.tokenEndpoint, params, a.clientSecret))
+  return tokenResponseToOAuthToken(a.serverUrl, await postToken(a.tokenEndpoint, params))
 }
 
 export async function refreshAccessToken(a: {
@@ -71,7 +71,7 @@ export async function refreshAccessToken(a: {
     client_id: a.clientId,
   })
   if (a.clientSecret) params.set('client_secret', a.clientSecret)
-  const tok = tokenResponseToOAuthToken(a.serverUrl, await postToken(a.tokenEndpoint, params, a.clientSecret))
+  const tok = tokenResponseToOAuthToken(a.serverUrl, await postToken(a.tokenEndpoint, params))
   // Some providers omit refresh_token on refresh — preserve the previous one.
   if (!tok.refreshToken) tok.refreshToken = a.refreshToken
   return tok

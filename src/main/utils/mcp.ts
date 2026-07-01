@@ -45,7 +45,7 @@ async function resolveValidToken(url: string, owner: string): Promise<OAuthToken
     await saveToken(refreshed, owner, null)
     return refreshed
   } catch (err) {
-    console.warn(`[mcp-oauth] refresh failed for ${url} (${owner}):`, err)
+    console.warn(`[conduit] refresh failed for ${url} (${owner}):`, err)
     return null
   }
 }

@@ -30,7 +30,7 @@ export function ensureLocalSecretKey(opts: {
   } else {
     key = crypto.randomBytes(32).toString('hex')
     fs.writeFileSync(keyPath, key, { mode: 0o600 })
-    console.log(`[mcp-oauth] Generated local encryption key at ${keyPath}`)
+    console.log(`[conduit] Generated local encryption key at ${keyPath}`)
   }
   env.CONDUIT_SECRET_KEY = key
 }
