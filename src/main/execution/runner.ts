@@ -7,7 +7,8 @@ import { ExecutionRun, LogEntry } from '../../shared/types'
 import { createRun, updateRun } from '../db/queries/runs'
 import { getAgent } from '../db/queries/agents'
 import { createWorkspace, deleteWorkspace } from './workspace'
-import { writeMcpConfig, deleteMcpConfig, buildMergedMcpConfig } from '../utils/mcp'
+import { writeMcpConfig, deleteMcpConfig } from '../utils/mcp'
+import { DEV_USER_ID } from '../../server/auth/config'
 import { LOGS_DIR } from '../utils/paths'
 import { buildClaudeArgs, parseClaudeOutput } from './adapters/claude'
 import { buildAmpArgs, parseAmpOutput } from './adapters/amp'
@@ -77,8 +78,7 @@ export async function startRun(
   const run = updateRun(runId, { logPath: realLogPath })
 
   // 3b. Write MCP config now that we have the runId (merge global MCPs with agent MCPs)
-  const mergedMcpConfig = buildMergedMcpConfig(agent.mcpConfig)
-  const mcpConfigPath = writeMcpConfig(runId, mergedMcpConfig)
+  const mcpConfigPath = await writeMcpConfig(runId, agent.mcpConfig, DEV_USER_ID)
 
   // 5. Open log file write stream
   const logStream = fs.createWriteStream(realLogPath, { flags: 'a', encoding: 'utf8' })
