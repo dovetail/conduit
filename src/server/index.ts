@@ -131,6 +131,10 @@ app.use(cookieParser())
 // Auth routes (login, callback, logout, me) — no session required
 app.use('/auth', authRoutes)
 
+// MCP OAuth callback route — must be before sessionMiddleware so the OAuth
+// provider's redirect arrives without requiring a Conduit session cookie.
+app.use('/mcp/oauth', createMcpOAuthRouter(broadcast))
+
 // Session middleware — validates session cookie, attaches RequestContext to req
 app.use(sessionMiddleware)
 
@@ -155,9 +159,6 @@ const triggerService = new TriggerService(broadcast)
 
 // Inbound trigger HTTP endpoints. Registered before SPA catch-all but after triggerService.
 app.use('/api/triggers', express.json({ limit: '1mb' }), createTriggerRoutes(triggerService))
-
-// MCP OAuth callback route — must be registered before the SPA catch-all
-app.use('/mcp/oauth', createMcpOAuthRouter(broadcast))
 
 // SPA fallback — all other GETs serve index.html
 app.get('*', (_req, res) => {

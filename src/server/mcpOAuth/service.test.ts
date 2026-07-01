@@ -24,8 +24,9 @@ vi.mock('../../main/db/queries/oauthTokens', () => ({
 }))
 vi.mock('./flow', async (orig) => ({ ...(await orig() as any), exchangeCode: vi.fn(async () => ({ serverUrl: 'https://mcp.linear.app', accessToken: 'AT', tokenType: 'Bearer' })) }))
 
-import { startAuth, getStatus, resolveServerTarget } from './service'
-import { putPending } from './state'
+import { startAuth, getStatus, resolveServerTarget, revoke } from './service'
+import { canAccessEntity, isEntityOwner } from '../../main/db/queries/access'
+import { getConnectedByUserId } from '../../main/db/queries/oauthTokens'
 
 describe('service', () => {
   beforeEach(() => { process.env.CONDUIT_BASE_URL = 'http://localhost:7456' })
@@ -55,5 +56,22 @@ describe('service', () => {
     const s = await getStatus('g1', true, 'u1')
     expect(s.connected).toBe(true)
     expect((s as any).accessToken).toBeUndefined()
+  })
+
+  it('startAuth rejects when canAccessEntity returns false', async () => {
+    vi.mocked(canAccessEntity).mockResolvedValueOnce(false)
+    await expect(startAuth('g1', true, 'u1')).rejects.toThrow('Access denied')
+  })
+
+  it('revoke of a global server rejects when user is neither owner nor connector', async () => {
+    // canAccessEntity still returns true (access is granted); only the owner/connector check fails
+    vi.mocked(isEntityOwner).mockResolvedValueOnce(false)
+    vi.mocked(getConnectedByUserId).mockResolvedValueOnce('other-user')
+    await expect(revoke('g1', true, 'someone-else')).rejects.toThrow('Only the owner or the connecting user can revoke this token')
+  })
+
+  it('revoke of a global server succeeds when user is the owner', async () => {
+    vi.mocked(isEntityOwner).mockResolvedValueOnce(true)
+    await expect(revoke('g1', true, 'u1')).resolves.toBeUndefined()
   })
 })
