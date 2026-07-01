@@ -257,7 +257,7 @@ export async function startRunServer(
     const cliArgs =
       agent.runner === 'amp'
         ? buildAmpArgs(mcpConfigPath)
-        : buildClaudeArgs(mcpConfigPath)
+        : buildClaudeArgs(mcpConfigPath, agent.effort)
 
     const binary = agent.runner === 'amp' ? 'amp' : 'claude'
 

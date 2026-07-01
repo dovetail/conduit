@@ -13,7 +13,7 @@ import { useRepositories, useRepoSyncEvents } from '@renderer/hooks/useRepositor
 import { useUIStore } from '@renderer/store/ui'
 import { useAuth } from '@renderer/contexts/AuthContext'
 import { cn } from '@renderer/lib/utils'
-import type { AgentConfig, RunnerType } from '@shared/types'
+import type { AgentConfig, RunnerType, RunnerEffort } from '@shared/types'
 
 // Inline SVG logos for each runner
 const RunnerLogos: Record<RunnerType, React.FC<{ size?: number; active?: boolean }>> = {
@@ -124,6 +124,7 @@ export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(funct
         workingDir: agent.workingDir,
         publishTargetIds: agent.publishTargetIds,
         repositoryId: agent.repositoryId,
+        effort: agent.effort,
       })
     }
   }, [agent])
@@ -182,8 +183,8 @@ export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(funct
     (field: keyof typeof draft, value: unknown) => {
       const updated = { ...draft, [field]: value }
       setDraft(updated)
-      const { name, runner, prompt, envVars, mcpConfig, gistId, workingDir, publishTargetIds, repositoryId } = updated
-      scheduleSave({ name, runner, prompt, envVars, mcpConfig, gistId, workingDir, publishTargetIds, repositoryId })
+      const { name, runner, prompt, envVars, mcpConfig, gistId, workingDir, publishTargetIds, repositoryId, effort } = updated
+      scheduleSave({ name, runner, prompt, envVars, mcpConfig, gistId, workingDir, publishTargetIds, repositoryId, effort })
     },
     [draft, scheduleSave]
   )
@@ -242,6 +243,38 @@ export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(funct
             onChange={(r) => handleChange('runner', r)}
           />
         </div>
+
+        {/* Reasoning effort — Claude only (maps to `claude --effort`) */}
+        {(draft.runner ?? 'claude') === 'claude' && (
+          <div className="space-y-1.5">
+            <label className="block text-xs font-medium text-[var(--text-secondary)]">
+              Reasoning Effort
+            </label>
+            <div className="flex gap-1 p-0.5 rounded-md bg-[var(--bg-primary)] border border-[var(--border)]">
+              {([undefined, 'low', 'medium', 'high', 'xhigh', 'max'] as (RunnerEffort | undefined)[]).map((level) => {
+                const active = (draft.effort ?? undefined) === level
+                return (
+                  <button
+                    key={level ?? 'default'}
+                    type="button"
+                    onClick={() => handleChange('effort', level)}
+                    className={cn(
+                      'flex-1 text-xs py-1.5 rounded-md transition-colors font-medium capitalize',
+                      active
+                        ? 'bg-[var(--bg-secondary)] text-[var(--text-primary)] shadow-sm'
+                        : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                    )}
+                  >
+                    {level ?? 'Default'}
+                  </button>
+                )
+              })}
+            </div>
+            <p className="text-[10px] text-[var(--text-secondary)] opacity-70">
+              Higher effort lets Claude reason longer. Default uses the CLI's built-in setting.
+            </p>
+          </div>
+        )}
 
         {/* Repository */}
         <div className="space-y-1.5">

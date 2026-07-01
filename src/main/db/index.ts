@@ -144,6 +144,7 @@ export async function initDb(): Promise<void> {
       working_dir TEXT,
       publish_target_ids TEXT,
       repository_id TEXT,
+      effort TEXT,
       owner_id TEXT,
       created_at BIGINT NOT NULL,
       updated_at BIGINT NOT NULL
@@ -225,6 +226,7 @@ export async function initDb(): Promise<void> {
 
     -- Idempotent column adds for databases created before these columns existed.
     ALTER TABLE agents ADD COLUMN IF NOT EXISTS owner_id TEXT;
+    ALTER TABLE agents ADD COLUMN IF NOT EXISTS effort TEXT;
     ALTER TABLE global_mcp_servers ADD COLUMN IF NOT EXISTS owner_id TEXT;
     ALTER TABLE publish_targets ADD COLUMN IF NOT EXISTS owner_id TEXT;
     ALTER TABLE repositories ADD COLUMN IF NOT EXISTS owner_id TEXT;

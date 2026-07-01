@@ -90,6 +90,7 @@ export const agents = pgTable('agents', {
   workingDir: text('working_dir'),
   publishTargetIds: text('publish_target_ids'),
   repositoryId: text('repository_id'),
+  effort: text('effort'),
   ownerId: text('owner_id'),
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),

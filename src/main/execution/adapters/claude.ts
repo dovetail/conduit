@@ -2,8 +2,10 @@
  * Build the CLI arguments for the `claude` binary.
  * The prompt is NOT included here — it is written to stdin after spawn to avoid
  * being consumed by --mcp-config's variadic <configs...> parser.
+ *
+ * `effort` maps to `claude --effort <level>`; when omitted the CLI default applies.
  */
-export function buildClaudeArgs(mcpConfigPath: string): string[] {
+export function buildClaudeArgs(mcpConfigPath: string, effort?: string): string[] {
   return [
     '-p',
     '--verbose',
@@ -12,6 +14,7 @@ export function buildClaudeArgs(mcpConfigPath: string): string[] {
     '--model',
     'claude-opus-4-6',
     '--dangerously-skip-permissions',
+    ...(effort ? ['--effort', effort] : []),
     '--mcp-config',
     mcpConfigPath,
   ]

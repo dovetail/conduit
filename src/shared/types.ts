@@ -1,5 +1,8 @@
 export type RunnerType = 'claude' | 'amp' | 'cursor'
 
+/** Reasoning effort for the Claude runner (maps to the `claude --effort <level>` flag). */
+export type RunnerEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
 // ── Auth & Users ───────────────────────────────────────────────────────────
 
 export interface User {
@@ -144,6 +147,8 @@ export interface AgentConfig {
   publishTargetIds?: string[]
   /** ID of a managed repository to use as the workspace */
   repositoryId?: string
+  /** Reasoning effort for the Claude runner. Ignored by other runners; unset uses the CLI default. */
+  effort?: RunnerEffort
   ownerId?: string
   createdAt: number
   updatedAt: number
