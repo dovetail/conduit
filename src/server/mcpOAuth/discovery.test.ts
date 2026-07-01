@@ -7,7 +7,35 @@ vi.mock('../../main/db/queries/mcpOAuthClients', () => ({
   saveClient: vi.fn(async (c: any) => { clients.set(c.serverUrl, c) }),
 }))
 
-import { discoverOAuthEndpoints, ensureRegisteredClient } from './discovery'
+import { discoverOAuthEndpoints, ensureRegisteredClient, wellKnownCandidates } from './discovery'
+
+describe('wellKnownCandidates', () => {
+  it('inserts the well-known segment between host and path (RFC 8414) for path-scoped issuers', () => {
+    // Regression: Datadog's AS issuer is https://mcp.us3.datadoghq.com/v1/mcp.
+    // The naive appended form (…/v1/mcp/.well-known/…) 404s; the path-aware and
+    // origin-rooted forms are what it actually serves.
+    const c = wellKnownCandidates('https://mcp.us3.datadoghq.com/v1/mcp')
+    expect(c).toContain('https://mcp.us3.datadoghq.com/.well-known/oauth-authorization-server/v1/mcp')
+    expect(c).toContain('https://mcp.us3.datadoghq.com/.well-known/oauth-authorization-server')
+    expect(c).not.toContain('https://mcp.us3.datadoghq.com/v1/mcp/.well-known/oauth-authorization-server')
+  })
+
+  it('includes OIDC path-appended and origin-rooted variants', () => {
+    const c = wellKnownCandidates('https://host.example.com/v1/mcp')
+    expect(c).toContain('https://host.example.com/v1/mcp/.well-known/openid-configuration')
+    expect(c).toContain('https://host.example.com/.well-known/openid-configuration')
+  })
+
+  it('handles root-path issuers without a doubled slash', () => {
+    const c = wellKnownCandidates('https://auth.example.com')
+    expect(c).toContain('https://auth.example.com/.well-known/oauth-authorization-server')
+    expect(c.every((u) => !u.includes('//.well-known'))).toBe(true)
+  })
+
+  it('returns nothing for an unparseable URL', () => {
+    expect(wellKnownCandidates('not a url')).toEqual([])
+  })
+})
 
 const meta = {
   authorization_endpoint: 'https://as.example.com/authorize',

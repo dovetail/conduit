@@ -8,6 +8,39 @@ export interface OAuthServerMetadata {
   registration_endpoint?: string
 }
 
+/**
+ * Build the well-known metadata URLs to try for an issuer/base URL.
+ *
+ * When the URL has a path (e.g. https://host/v1/mcp), RFC 8414 puts the
+ * authorization-server metadata at `https://host/.well-known/oauth-authorization-server/v1/mcp`
+ * (segment inserted between host and path) — and many deployments also expose it
+ * origin-rooted. OIDC discovery instead appends `/.well-known/openid-configuration`
+ * after the path. We try all of these so path-scoped servers (like Datadog's
+ * `/v1/mcp`) are discovered rather than 404ing on a naive `${url}/.well-known/...`.
+ */
+export function wellKnownCandidates(urlStr: string): string[] {
+  let u: URL
+  try {
+    u = new URL(urlStr)
+  } catch {
+    return []
+  }
+  const origin = u.origin
+  const path = u.pathname.replace(/\/+$/, '')
+  const hasPath = path.length > 0 && path !== '/'
+  const candidates: string[] = []
+  // RFC 8414: well-known segment inserted between host and path (path-aware), then origin-rooted.
+  if (hasPath) candidates.push(`${origin}/.well-known/oauth-authorization-server${path}`)
+  candidates.push(`${origin}/.well-known/oauth-authorization-server`)
+  // OIDC discovery: appended after the path, plus the path-inserted and origin-rooted variants.
+  if (hasPath) {
+    candidates.push(`${origin}${path}/.well-known/openid-configuration`)
+    candidates.push(`${origin}/.well-known/openid-configuration${path}`)
+  }
+  candidates.push(`${origin}/.well-known/openid-configuration`)
+  return candidates
+}
+
 /** Fetch an AS metadata document and return it if it has the required fields, null otherwise. */
 async function fetchAsMetadata(metadataUrl: string): Promise<OAuthServerMetadata | null> {
   try {
@@ -38,12 +71,8 @@ export async function discoverOAuthEndpoints(serverUrl: string): Promise<OAuthSe
     origin = base
   }
 
-  // Step 1: Try base well-known candidates directly.
-  const baseCandidates = [
-    `${base}/.well-known/oauth-authorization-server`,
-    `${base}/.well-known/openid-configuration`,
-  ]
-  for (const url of baseCandidates) {
+  // Step 1: Try well-known candidates for the server URL (RFC 8414 + OIDC, path-aware).
+  for (const url of wellKnownCandidates(serverUrl)) {
     const meta = await fetchAsMetadata(url)
     if (meta) return meta
   }
@@ -69,26 +98,27 @@ export async function discoverOAuthEndpoints(serverUrl: string): Promise<OAuthSe
       // network failure for resource fetch — proceed to fallback PRM URL
     }
 
-    // Fall back to <origin>/.well-known/oauth-protected-resource if no explicit URL.
-    if (!prmUrl) {
-      prmUrl = `${origin}/.well-known/oauth-protected-resource`
-    }
+    // Fall back to well-known PRM locations if no explicit URL was advertised.
+    // Try the path-aware location first (RFC 9728), then origin-rooted.
+    const path = (() => { try { return new URL(serverUrl).pathname.replace(/\/+$/, '') } catch { return '' } })()
+    const prmCandidates = prmUrl
+      ? [prmUrl]
+      : [
+          ...(path && path !== '/' ? [`${origin}/.well-known/oauth-protected-resource${path}`] : []),
+          `${origin}/.well-known/oauth-protected-resource`,
+        ]
 
-    // 2b. Fetch the PRM document.
-    const prmRes = await fetch(prmUrl, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000) })
-    if (prmRes.ok) {
+    // 2b. Fetch the first PRM document that resolves.
+    for (const candidate of prmCandidates) {
+      const prmRes = await fetch(candidate, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000) })
+      if (!prmRes.ok) continue
       const prmData = (await prmRes.json()) as Record<string, unknown>
       const authorizationServers = Array.isArray(prmData.authorization_servers)
         ? (prmData.authorization_servers as unknown[])
         : []
       if (authorizationServers.length > 0 && typeof authorizationServers[0] === 'string') {
-        const asBase = (authorizationServers[0] as string).replace(/\/$/, '')
-        // 2c. Try AS well-known candidates.
-        const asCandidates = [
-          `${asBase}/.well-known/oauth-authorization-server`,
-          `${asBase}/.well-known/openid-configuration`,
-        ]
-        for (const url of asCandidates) {
+        // 2c. Try AS well-known candidates (RFC 8414 + OIDC, path-aware).
+        for (const url of wellKnownCandidates(authorizationServers[0] as string)) {
           const meta = await fetchAsMetadata(url)
           if (meta) return meta
         }
