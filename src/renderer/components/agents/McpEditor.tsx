@@ -6,9 +6,28 @@ import { Info } from 'lucide-react'
 import { useUIStore } from '@renderer/store/ui'
 import { useGlobalMcps } from '@renderer/hooks/useGlobalMcps'
 import { McpOAuthButton } from '@renderer/components/settings/McpOAuthButton'
-import type { McpServersConfig } from '@shared/types'
+import { useMcpOAuthProbe } from '@renderer/hooks/useMcpOAuth'
+import type { McpServersConfig, McpServerEntry } from '@shared/types'
 
 const DEFAULT_MCP_CONFIG: McpServersConfig = { mcpServers: {} }
+
+function AgentMcpOAuthRow({ agentId, serverKey, entry }: { agentId: string; serverKey: string; entry: McpServerEntry }) {
+  const probe = useMcpOAuthProbe(entry)
+  const show = !!entry.oauth || !!probe.data?.supportsOAuth
+  return (
+    <div className="flex items-center justify-between gap-3 px-2.5 py-1.5 rounded bg-[var(--bg-primary)] border border-[var(--border)]">
+      <div className="min-w-0">
+        <p className="text-xs font-medium text-[var(--text-primary)] truncate">{serverKey}</p>
+        <p className="text-xs text-[var(--text-secondary)] font-mono truncate opacity-70">{entry.url}</p>
+      </div>
+      {show ? (
+        <McpOAuthButton serverId={`${agentId}:${serverKey}`} isGlobal={false} serverUrl={entry.url!} serverName={serverKey} />
+      ) : (
+        <span className="text-xs text-[var(--text-secondary)] opacity-60">No authentication required</span>
+      )}
+    </div>
+  )
+}
 
 interface McpEditorProps {
   value: McpServersConfig
@@ -47,9 +66,9 @@ export function McpEditor({ value, onChange, agentId }: McpEditorProps) {
     [onChange]
   )
 
-  // Collect URL-type servers with OAuth config for the authentication panel
-  const urlServersWithOAuth = Object.entries(value?.mcpServers ?? {}).filter(
-    ([, entry]) => (entry.type === 'url' || entry.url) && entry.url && entry.oauth
+  // Collect all URL-type servers for the authentication panel (probe will determine per-row whether OAuth is needed)
+  const urlServers = Object.entries(value?.mcpServers ?? {}).filter(
+    ([, entry]) => (entry.type === 'url' || !!entry.url) && !!entry.url
   )
 
   return (
@@ -94,31 +113,13 @@ export function McpEditor({ value, onChange, agentId }: McpEditorProps) {
       </div>
 
       {/* OAuth authentication panel for URL-type servers */}
-      {agentId && urlServersWithOAuth.length > 0 && (
+      {agentId && urlServers.length > 0 && (
         <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2.5 space-y-2">
           <p className="text-xs font-medium text-[var(--text-secondary)]">
             URL-based MCP servers — authentication required:
           </p>
-          {urlServersWithOAuth.map(([serverKey, entry]) => (
-            <div
-              key={serverKey}
-              className="flex items-center justify-between gap-3 px-2.5 py-1.5 rounded bg-[var(--bg-primary)] border border-[var(--border)]"
-            >
-              <div className="min-w-0">
-                <p className="text-xs font-medium text-[var(--text-primary)] truncate">
-                  {serverKey}
-                </p>
-                <p className="text-xs text-[var(--text-secondary)] font-mono truncate opacity-70">
-                  {entry.url}
-                </p>
-              </div>
-              <McpOAuthButton
-                serverId={`${agentId}:${serverKey}`}
-                isGlobal={false}
-                serverUrl={entry.url!}
-                serverName={serverKey}
-              />
-            </div>
+          {urlServers.map(([serverKey, entry]) => (
+            <AgentMcpOAuthRow key={serverKey} agentId={agentId} serverKey={serverKey} entry={entry} />
           ))}
         </div>
       )}
