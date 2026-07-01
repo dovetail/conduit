@@ -29,9 +29,27 @@ interface ActiveRun {
 // Active child processes keyed by runId
 const activeProcesses = new Map<string, ActiveRun>()
 
+/** Delay before removing a run's workspace, so executables it spawned can exit
+ *  and release file handles before we delete the directory. */
+const WORKSPACE_CLEANUP_DELAY_MS = 30_000
+
+/** Append a system log entry to a run's log file (used after the log stream is
+ *  closed, e.g. by the delayed cleanup). Also emits to stdout for log forwarding. */
+function appendRunLog(runId: string, chunk: string): void {
+  const entry: LogEntry = { t: Date.now(), stream: 'system', chunk }
+  try {
+    fs.appendFileSync(path.join(LOGS_DIR, `${runId}.jsonl`), JSON.stringify(entry) + '\n')
+  } catch (err) {
+    console.error(`[runner] Failed to append cleanup log for run ${runId}: ${err}`)
+  }
+  process.stdout.write(JSON.stringify({ runId, ...entry }) + '\n')
+}
+
 /**
- * Cleanup helper: remove workspace + MCP config file for a run.
- * If worktreeClonePath is set, the workspace is a git worktree and needs special removal.
+ * Cleanup helper for a finished run. Removes the run's MCP config immediately
+ * (it carries a token), then — after a short delay so spawned executables can
+ * exit — removes the run's workspace (git worktree or ephemeral dir) and logs
+ * the outcome to the run's log. A fixed `workingDir` is never deleted.
  */
 function cleanupRun(
   runId: string,
@@ -40,13 +58,29 @@ function cleanupRun(
   worktreeClonePath?: string
 ): void {
   deleteMcpConfig(runId)
-  if (worktreeClonePath && workspacePath) {
-    removeWorktree(worktreeClonePath, workspacePath).catch((err) =>
-      console.error(`[runner] Failed to remove worktree: ${err}`)
-    )
-  } else if (ephemeral && workspacePath) {
-    deleteWorkspace(workspacePath)
-  }
+  const removable = !!workspacePath && (!!worktreeClonePath || ephemeral)
+  if (!removable) return
+
+  setTimeout(() => {
+    void (async () => {
+      try {
+        if (worktreeClonePath) {
+          await removeWorktree(worktreeClonePath, workspacePath!)
+        } else {
+          deleteWorkspace(workspacePath!)
+        }
+      } catch (err) {
+        console.error(`[runner] Workspace cleanup error for run ${runId}: ${err}`)
+      }
+      // removeWorktree/deleteWorkspace swallow errors internally, so verify by
+      // checking the directory is actually gone.
+      if (fs.existsSync(workspacePath!)) {
+        appendRunLog(runId, `⚠ Failed to clean up run workspace — ${workspacePath} still present.`)
+      } else {
+        appendRunLog(runId, `✓ Cleaned up run workspace (${workspacePath}).`)
+      }
+    })()
+  }, WORKSPACE_CLEANUP_DELAY_MS)
 }
 
 /**
