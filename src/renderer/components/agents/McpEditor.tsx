@@ -22,6 +22,8 @@ function AgentMcpOAuthRow({ agentId, serverKey, entry }: { agentId: string; serv
       </div>
       {show ? (
         <McpOAuthButton serverId={`${agentId}:${serverKey}`} isGlobal={false} serverUrl={entry.url!} serverName={serverKey} />
+      ) : probe.isLoading && !entry.oauth ? (
+        <span className="text-xs text-[var(--text-secondary)] opacity-60">Checking…</span>
       ) : (
         <span className="text-xs text-[var(--text-secondary)] opacity-60">No authentication required</span>
       )}
@@ -116,7 +118,7 @@ export function McpEditor({ value, onChange, agentId }: McpEditorProps) {
       {agentId && urlServers.length > 0 && (
         <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2.5 space-y-2">
           <p className="text-xs font-medium text-[var(--text-secondary)]">
-            URL-based MCP servers — authentication required:
+            URL-based MCP servers:
           </p>
           {urlServers.map(([serverKey, entry]) => (
             <AgentMcpOAuthRow key={serverKey} agentId={agentId} serverKey={serverKey} entry={entry} />
