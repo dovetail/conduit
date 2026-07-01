@@ -182,6 +182,8 @@ export interface ExecutionRun {
   exitCode?: number
   triggerContext?: TriggerContext
   startedBy?: string
+  /** Last non-empty output line of the run (ANSI-stripped), for a list excerpt. */
+  lastLine?: string
 }
 
 export interface LogEntry {

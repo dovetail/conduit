@@ -180,6 +180,14 @@ export async function startRunServer(
     broadcast('run:output', { runId, stream: 'system', chunks: [chunk] })
   }
 
+  // Track the last non-empty output line (ANSI-stripped) for a run-list excerpt.
+  let lastLine = ''
+  function updateLastLine(chunk: string): void {
+    const cleaned = chunk.replace(/\x1b\[[0-9;]*m/g, '')
+    const lines = cleaned.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+    if (lines.length > 0) lastLine = lines[lines.length - 1].slice(0, 500)
+  }
+
   // Buffer + flush helpers (batch rapid output into single WebSocket messages)
   const stdoutBuffer: string[] = []
   const stderrBuffer: string[] = []
@@ -204,6 +212,7 @@ export async function startRunServer(
   function handleStdoutChunk(chunk: string): void {
     const entry: LogEntry = { t: Date.now(), stream: 'stdout', chunk }
     writeLogEntry(entry)
+    updateLastLine(chunk)
     stdoutBuffer.push(chunk)
     scheduleFlush()
   }
@@ -211,6 +220,7 @@ export async function startRunServer(
   function handleStderrChunk(chunk: string): void {
     const entry: LogEntry = { t: Date.now(), stream: 'stderr', chunk }
     writeLogEntry(entry)
+    updateLastLine(chunk)
     stderrBuffer.push(chunk)
     scheduleFlush()
   }
@@ -247,6 +257,7 @@ export async function startRunServer(
       endedAt,
       durationMs,
       exitCode: exitCode ?? undefined,
+      lastLine: lastLine || undefined,
     })
       .then((finalRun) => {
         broadcast('run:statusChange', {

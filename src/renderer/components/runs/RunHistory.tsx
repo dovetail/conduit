@@ -33,8 +33,16 @@ function RunRow({ run, index, isSelected, onClick }: RunRowProps) {
       <span className="text-xs text-[var(--text-secondary)] tabular-nums w-12 flex-shrink-0">
         #{index + 1}
       </span>
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 flex items-center gap-2">
         <StatusBadge status={run.status} />
+        {run.lastLine && (
+          <span
+            className="text-xs text-[var(--text-secondary)] font-mono truncate min-w-0"
+            title={run.lastLine}
+          >
+            {run.lastLine}
+          </span>
+        )}
       </div>
       <span className="text-xs text-[var(--text-secondary)] font-mono tabular-nums flex-shrink-0">
         {formatDuration(run.durationMs)}

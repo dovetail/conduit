@@ -166,4 +166,5 @@ export const runs = pgTable('runs', {
   exitCode: bigint('exit_code', { mode: 'number' }),
   triggerContext: text('trigger_context'),
   startedBy: text('started_by'),
+  lastLine: text('last_line'),
 })

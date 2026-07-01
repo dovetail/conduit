@@ -16,6 +16,7 @@ function rowToExecutionRun(row: typeof runs.$inferSelect): ExecutionRun {
     exitCode: row.exitCode ?? undefined,
     triggerContext: row.triggerContext ? JSON.parse(row.triggerContext) as TriggerContext : undefined,
     startedBy: row.startedBy ?? undefined,
+    lastLine: row.lastLine ?? undefined,
   }
 }
 
@@ -72,6 +73,7 @@ export async function updateRun(
   if ('workspacePath' in data) updateValues.workspacePath = data.workspacePath ?? null
   if (data.logPath !== undefined) updateValues.logPath = data.logPath
   if ('exitCode' in data) updateValues.exitCode = data.exitCode ?? null
+  if ('lastLine' in data) updateValues.lastLine = data.lastLine ?? null
 
   await getDb().update(runs).set(updateValues).where(eq(runs.id, id))
 

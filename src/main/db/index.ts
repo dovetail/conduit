@@ -173,7 +173,8 @@ export async function initDb(): Promise<void> {
       log_path TEXT NOT NULL,
       exit_code BIGINT,
       trigger_context TEXT,
-      started_by TEXT
+      started_by TEXT,
+      last_line TEXT
     );
 
     CREATE TABLE IF NOT EXISTS publish_targets (
@@ -239,6 +240,7 @@ export async function initDb(): Promise<void> {
     ALTER TABLE repositories ADD COLUMN IF NOT EXISTS commit_author_name TEXT;
     ALTER TABLE repositories ADD COLUMN IF NOT EXISTS commit_author_email TEXT;
     ALTER TABLE runs ADD COLUMN IF NOT EXISTS started_by TEXT;
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS last_line TEXT;
     ALTER TABLE oauth_tokens ADD COLUMN IF NOT EXISTS token_owner TEXT NOT NULL DEFAULT '__global__';
     ALTER TABLE oauth_tokens ADD COLUMN IF NOT EXISTS connected_by_user_id TEXT;
 
