@@ -14,6 +14,8 @@ import type {
   Trigger,
   TriggerFiredPayload,
   McpOAuthStatus,
+  McpOAuthProbeResult,
+  McpServerEntry,
   RunnerType,
   SlackPublishConfig,
   Share,
@@ -253,6 +255,8 @@ export function createWsConduitClient(wsUrl: string): ConduitAPI {
         invoke<{ authUrl: string }>('mcp:oauth:startAuth', serverId, isGlobal),
       revoke: (serverId: string, isGlobal: boolean) =>
         invoke<void>('mcp:oauth:revoke', serverId, isGlobal),
+      probe: (serverConfig: McpServerEntry) =>
+        invoke<McpOAuthProbeResult>('mcp:oauth:probe', serverConfig),
     },
 
     onMcpOAuthComplete: (

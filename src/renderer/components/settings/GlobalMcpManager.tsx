@@ -18,7 +18,25 @@ import { useMcpTools } from '@renderer/hooks/useMcpTools'
 import { useAuth } from '@renderer/contexts/AuthContext'
 import { cn } from '@renderer/lib/utils'
 import { McpOAuthButton } from './McpOAuthButton'
+import { useMcpOAuthProbe } from '@renderer/hooks/useMcpOAuth'
+import { api } from '@renderer/lib/ipc'
 import type { GlobalMcpServer, McpServerEntry, McpOAuthConfig } from '@shared/types'
+
+async function maybeKickOAuth(server: GlobalMcpServer) {
+  const cfg = server.serverConfig
+  if (!((cfg.type === 'url' || cfg.url) && cfg.url)) return
+  try {
+    const probe = cfg.oauth ? { supportsOAuth: true } : await api.mcpOAuth.probe(cfg)
+    if (!probe.supportsOAuth) return
+    const status = await api.mcpOAuth.getStatus(server.id, true)
+    const valid = status.connected && (status.expiresAt === undefined || status.expiresAt > Date.now())
+    if (valid) return
+    const { authUrl } = await api.mcpOAuth.startAuth(server.id, true)
+    window.open(authUrl, '_blank', 'noopener,noreferrer') // best-effort; may be popup-blocked
+  } catch {
+    // Non-fatal: the Authenticate button remains visible as the reliable fallback.
+  }
+}
 
 function McpHealthDot({ serverId, serverConfig }: { serverId: string; serverConfig: McpServerEntry }) {
   const { data, isLoading, isFetching, refetch } = useMcpHealth(serverId, serverConfig)
@@ -370,6 +388,7 @@ function ServerRow({ server, isDark, isOwner, onShare }: ServerRowProps) {
 
   const updateMcp = useUpdateGlobalMcp()
   const deleteMcp = useDeleteGlobalMcp()
+  const probe = useMcpOAuthProbe(server.serverConfig)
 
   const handleToggle = () => {
     updateMcp.mutate({ id: server.id, data: { enabled: !server.enabled } })
@@ -387,7 +406,10 @@ function ServerRow({ server, isDark, isOwner, onShare }: ServerRowProps) {
         },
       },
       {
-        onSuccess: () => setEditing(false),
+        onSuccess: (saved) => {
+          setEditing(false)
+          void maybeKickOAuth(saved)
+        },
       }
     )
   }
@@ -463,8 +485,8 @@ function ServerRow({ server, isDark, isOwner, onShare }: ServerRowProps) {
         <McpHealthDot serverId={server.id} serverConfig={server.serverConfig} />
       )}
 
-      {/* OAuth button for URL-type servers */}
-      {serverType === 'url' && server.serverConfig.url && server.serverConfig.oauth && (
+      {/* OAuth button for URL-type servers — shown when oauth block present or probe detects OAuth support */}
+      {serverType === 'url' && server.serverConfig.url && (server.serverConfig.oauth || probe.data?.supportsOAuth) && (
         <McpOAuthButton
           serverId={server.id}
           isGlobal={true}
@@ -550,7 +572,10 @@ export function GlobalMcpManager() {
         enabled: form.enabled,
       },
       {
-        onSuccess: () => setShowAddForm(false),
+        onSuccess: (saved) => {
+          setShowAddForm(false)
+          void maybeKickOAuth(saved)
+        },
       }
     )
   }

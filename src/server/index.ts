@@ -55,7 +55,7 @@ import {
 import { TriggerService } from './triggers/triggerService'
 import { createTriggerRoutes } from './triggers/triggerRoutes'
 import { createMcpOAuthRouter } from './mcpOAuth/routes'
-import { startAuth as mcpStartAuth, getStatus as mcpGetStatus, revoke as mcpRevoke } from './mcpOAuth/service'
+import { startAuth as mcpStartAuth, getStatus as mcpGetStatus, revoke as mcpRevoke, probeOAuthSupport as mcpProbe } from './mcpOAuth/service'
 import { listMcpTools } from './mcpTools'
 import { getGithubPat } from './store'
 import { readLogFile } from './utils'
@@ -567,6 +567,7 @@ const handlers: Record<string, HandlerFn> = {
     mcpGetStatus(serverId as string, isGlobal as boolean, ctx.userId, ctx.userGroupIds),
   'mcp:oauth:revoke': ([serverId, isGlobal], _ws, ctx) =>
     mcpRevoke(serverId as string, isGlobal as boolean, ctx.userId, ctx.userGroupIds),
+  'mcp:oauth:probe': ([serverConfig]) => mcpProbe(serverConfig as import('../shared/types').McpServerEntry),
 }
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect } from 'react'
 import { api } from '@renderer/lib/ipc'
+import type { McpServerEntry } from '@shared/types'
 
 const statusKey = (serverId: string) => ['mcpOAuthStatus', serverId] as const
 
@@ -29,6 +30,16 @@ export function useRevokeMcpToken() {
     onSuccess: (_d, { serverId }) => {
       queryClient.invalidateQueries({ queryKey: statusKey(serverId) })
     },
+  })
+}
+
+export function useMcpOAuthProbe(entry: McpServerEntry | undefined) {
+  const isUrl = !!entry && (entry.type === 'url' || !!entry.url) && !!entry.url
+  return useQuery({
+    queryKey: ['mcpOAuthProbe', entry?.url ?? ''] as const,
+    queryFn: () => api.mcpOAuth.probe(entry!),
+    enabled: isUrl,
+    staleTime: 5 * 60 * 1000,
   })
 }
 
