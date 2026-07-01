@@ -10,6 +10,9 @@ export function useMcpStatus(serverId: string | undefined, isGlobal: boolean) {
     queryKey: statusKey(serverId ?? ''),
     queryFn: () => api.mcpOAuth.getStatus(serverId!, isGlobal),
     enabled: !!serverId,
+    // Refresh when the user returns from the OAuth popup tab (focus refetch is
+    // disabled app-wide, so opt in here).
+    refetchOnWindowFocus: 'always',
   })
 }
 
