@@ -58,7 +58,7 @@ Conduit supports multi-user authentication via Okta OIDC. When Okta is not confi
 | `CONDUIT_SESSION_SECRET` | Secret for signing session cookies |
 | `CONDUIT_SESSION_TTL_MS` | Session lifetime in ms (default: 86400000 / 24h) |
 | `CONDUIT_OKTA_API_TOKEN` | Okta API token for user search (optional — enables sharing with users who haven't logged in yet) |
-| `CONDUIT_SECRET_KEY` | Symmetric key for encrypting secrets (GitHub App private keys, MCP OAuth tokens) at rest. Hex-encoded, must decode to exactly 32 bytes (64 hex chars). Generate with `openssl rand -hex 32`. **Local dev:** if unset, a key is auto-generated and persisted to `~/.conduit/.conduit.key`; **production must set this explicitly** — no auto-gen, no silent rotation. **No rotation:** changing it after secrets are stored makes all existing encrypted data undecryptable. |
+| `CONDUIT_SECRET_KEY` | Symmetric key for encrypting secrets (GitHub App private keys, MCP OAuth tokens) at rest. Hex-encoded, must decode to exactly 32 bytes (64 hex chars). Generate with `openssl rand -hex 32`. **Local dev:** if unset, a key is auto-generated and persisted to `.conduit.key` at the repo root (via `process.cwd()`); **production must set this explicitly** — no auto-gen, no silent rotation. **No rotation:** changing it after secrets are stored makes all existing encrypted data undecryptable. |
 | `CONDUIT_BASE_URL` | Base URL of the Conduit server (default: `http://localhost:7456`). Used to build the MCP OAuth redirect URI `${CONDUIT_BASE_URL}/mcp/oauth/callback`. Set this in production to your public hostname. |
 
 **Auth flow**: OIDC Authorization Code + PKCE. Sessions stored in SQLite. Groups synced from Okta ID token `groups` claim on each login.
@@ -86,22 +86,23 @@ MCP servers that require OAuth use **server-mode OAuth 2.0 + PKCE** — Conduit 
 - Per-agent MCPs: tokens are scoped to the acting user (`tokenOwner = userId`).
 - Global MCPs: tokens are shared under `tokenOwner = '__global__'`. The UI shows which user first connected ("Connected by …") so operators know whose credential is in use.
 
-**Encryption**: access tokens, refresh tokens, and DCR client secrets are all encrypted at rest using `CONDUIT_SECRET_KEY` via `src/server/crypto.ts` (AES-256-GCM). Local dev auto-generates and persists the key to `~/.conduit/.conduit.key`; production must set `CONDUIT_SECRET_KEY` explicitly.
+**Encryption**: access tokens, refresh tokens, and DCR client secrets are all encrypted at rest using `CONDUIT_SECRET_KEY` via `src/server/crypto.ts` (AES-256-GCM). Local dev auto-generates and persists the key to `.conduit.key` at the repo root; production must set `CONDUIT_SECRET_KEY` explicitly.
 
 **HTTP route** (mounted *before* session middleware, so the browser redirect always lands):
 - `GET /mcp/oauth/callback` — receives the authorization code, exchanges it for tokens, stores them, and closes the popup.
 
 **WebSocket channels** (`mcp:oauth:*`):
 - `mcp:oauth:startAuth` — initiates the flow; returns a URL to open in a popup.
-- `mcp:oauth:getStatus` — returns the current `McpOAuthStatus` (none | pending | connected | error) for a given server URL + token owner.
+- `mcp:oauth:getStatus` — returns the current `McpOAuthStatus` (object with `connected: boolean`, `connectedByUserId?: string`, `connectedByName?: string`, `scope: 'user' | 'global'`, `expiresAt?: number`) for a given server URL + token owner.
 - `mcp:oauth:revoke` — deletes stored tokens for a given server URL + token owner.
 
 **Run-time injection**: `writeMcpConfig` (called when launching an agent run) reads the stored access token and injects an `Authorization: Bearer <token>` header into the MCP server configuration. Tokens are auto-refreshed before injection when a refresh token is available.
 
 **Files**:
 - `src/server/crypto.ts` — `encryptSecret` / `decryptSecret` (AES-256-GCM)
-- `src/server/mcp/oauth/` — DCR, discovery, PKCE exchange, token store, callback handler
-- `src/main/db/queries/mcpOAuth.ts` — `getToken`, `saveToken`, `deleteToken`
+- `src/server/mcpOAuth/` — discovery.ts (DCR + metadata), flow.ts (PKCE + code exchange), state.ts (pending-auth store), service.ts (startAuth/getStatus/revoke/handleCallback), routes.ts (callback handler)
+- `src/main/db/queries/oauthTokens.ts` — `getToken`, `saveToken`, `deleteToken`, `getTokenStatus`, `getConnectedByUserId` (owner-scoped, encrypted tokens)
+- `src/main/db/queries/mcpOAuthClients.ts` — `getClient`, `saveClient`, `deleteClient` (DCR client cache)
 - `src/renderer/hooks/useMcpOAuth.ts` — TanStack Query hooks for OAuth status + mutations
 
 ## Ownership & Sharing
