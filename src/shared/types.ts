@@ -176,7 +176,7 @@ export interface RunStatusChangePayload {
 }
 
 export interface McpHealthResult {
-  status: 'healthy' | 'unhealthy'
+  status: 'healthy' | 'unhealthy' | 'unauthorized'
   message: string
 }
 

@@ -46,12 +46,16 @@ function McpHealthDot({ serverId, serverConfig }: { serverId: string; serverConf
     ? '#F59E0B'
     : data?.status === 'healthy'
     ? '#22C55E'
+    : data?.status === 'unauthorized'
+    ? '#F59E0B'
     : '#EF4444'
 
   const label = pending
     ? 'Checking…'
     : data?.status === 'healthy'
     ? `Connected · ${data.message}`
+    : data?.status === 'unauthorized'
+    ? `Authentication required · ${data.message}`
     : `Not connected · ${data?.message ?? 'Unknown error'}`
 
   return (

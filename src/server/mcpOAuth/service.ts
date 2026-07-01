@@ -101,6 +101,19 @@ export async function probeOAuthSupport(config: McpServerEntry): Promise<McpOAut
     const meta = await discoverOAuthEndpoints(config.url)
     return { supportsOAuth: true, supportsDcr: !!meta.registration_endpoint }
   } catch {
+    // Discovery failed — do a lightweight probe to detect 401/403.
+    try {
+      const res = await fetch(config.url, {
+        method: 'GET',
+        headers: { Accept: '*/*' },
+        signal: AbortSignal.timeout(5000),
+      })
+      if (res.status === 401 || res.status === 403) {
+        return { supportsOAuth: true, supportsDcr: false }
+      }
+    } catch {
+      // network error — fall through
+    }
     return { supportsOAuth: false, supportsDcr: false }
   }
 }
