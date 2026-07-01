@@ -143,6 +143,7 @@ export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(funct
         publishTargetIds: agent.publishTargetIds,
         repositoryId: agent.repositoryId,
         effort: agent.effort,
+        enableRepoMcps: agent.enableRepoMcps ?? false,
       })
     }
   }, [agent])
@@ -201,8 +202,8 @@ export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(funct
     (field: keyof typeof draft, value: unknown) => {
       const updated = { ...draft, [field]: value }
       setDraft(updated)
-      const { name, runner, prompt, envVars, mcpConfig, gistId, workingDir, publishTargetIds, repositoryId, effort } = updated
-      scheduleSave({ name, runner, prompt, envVars, mcpConfig, gistId, workingDir, publishTargetIds, repositoryId, effort })
+      const { name, runner, prompt, envVars, mcpConfig, gistId, workingDir, publishTargetIds, repositoryId, effort, enableRepoMcps } = updated
+      scheduleSave({ name, runner, prompt, envVars, mcpConfig, gistId, workingDir, publishTargetIds, repositoryId, effort, enableRepoMcps })
     },
     [draft, scheduleSave]
   )
@@ -293,6 +294,26 @@ export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(funct
             </p>
           </div>
         )}
+
+        {/* Repository-configured MCPs toggle */}
+        <div className="space-y-1.5">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={draft.enableRepoMcps ?? false}
+              onChange={(e) => handleChange('enableRepoMcps', e.target.checked)}
+              className="rounded border-[var(--border)] accent-[var(--accent)]"
+            />
+            <span className="text-xs font-medium text-[var(--text-primary)]">
+              Enable repository-configured MCP servers
+            </span>
+          </label>
+          <p className="text-[10px] text-[var(--text-secondary)] opacity-70 pl-6">
+            When on, MCP servers defined in the repository's own <code className="font-mono">.mcp.json</code> (and the
+            host's personal Claude connectors) load alongside Conduit's managed MCPs. When off, runs use only Conduit's
+            global and agent MCP servers for a clean, reproducible environment.
+          </p>
+        </div>
 
         {/* Repository */}
         <div className="space-y-1.5">

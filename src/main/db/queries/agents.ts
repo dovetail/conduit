@@ -30,6 +30,7 @@ function rowToAgentConfig(row: typeof agents.$inferSelect): AgentConfig {
     publishTargetIds: row.publishTargetIds ? JSON.parse(row.publishTargetIds) as string[] : undefined,
     repositoryId: row.repositoryId ?? undefined,
     effort: (row.effort ?? undefined) as AgentConfig['effort'],
+    enableRepoMcps: row.enableRepoMcps ?? false,
     ownerId: row.ownerId ?? undefined,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -70,6 +71,7 @@ export async function createAgent(
     publishTargetIds: data.publishTargetIds ? JSON.stringify(data.publishTargetIds) : null,
     repositoryId: data.repositoryId ?? null,
     effort: data.effort ?? null,
+    enableRepoMcps: data.enableRepoMcps ?? false,
     ownerId,
     createdAt: now,
     updatedAt: now,
@@ -102,6 +104,7 @@ export async function updateAgent(
   if ('publishTargetIds' in data) updateValues.publishTargetIds = data.publishTargetIds ? JSON.stringify(data.publishTargetIds) : null
   if ('repositoryId' in data) updateValues.repositoryId = data.repositoryId ?? null
   if ('effort' in data) updateValues.effort = data.effort ?? null
+  if ('enableRepoMcps' in data) updateValues.enableRepoMcps = data.enableRepoMcps ?? false
 
   await getDb().update(agents).set(updateValues).where(eq(agents.id, id))
 

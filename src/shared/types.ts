@@ -159,6 +159,12 @@ export interface AgentConfig {
   repositoryId?: string
   /** Reasoning effort for the Claude runner. Ignored by other runners; unset uses the CLI default. */
   effort?: RunnerEffort
+  /**
+   * When true, MCP servers configured in the repository (its `.mcp.json`) and the
+   * host's personal connectors load alongside Conduit's managed MCPs. When false
+   * (default), only Conduit's global + agent MCPs are used (`--strict-mcp-config`).
+   */
+  enableRepoMcps?: boolean
   ownerId?: string
   createdAt: number
   updatedAt: number

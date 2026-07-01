@@ -91,6 +91,7 @@ export const agents = pgTable('agents', {
   publishTargetIds: text('publish_target_ids'),
   repositoryId: text('repository_id'),
   effort: text('effort'),
+  enableRepoMcps: boolean('enable_repo_mcps').notNull().default(false),
   ownerId: text('owner_id'),
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),

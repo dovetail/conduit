@@ -4,8 +4,10 @@
  * being consumed by --mcp-config's variadic <configs...> parser.
  *
  * `effort` maps to `claude --effort <level>`; when omitted the CLI default applies.
+ * `strictMcp` adds `--strict-mcp-config` so ONLY the injected --mcp-config servers
+ * load — ignoring the repo's own `.mcp.json` and the host's personal connectors.
  */
-export function buildClaudeArgs(mcpConfigPath: string, effort?: string): string[] {
+export function buildClaudeArgs(mcpConfigPath: string, effort?: string, strictMcp = false): string[] {
   return [
     '-p',
     '--verbose',
@@ -15,6 +17,7 @@ export function buildClaudeArgs(mcpConfigPath: string, effort?: string): string[
     'claude-opus-4-6',
     '--dangerously-skip-permissions',
     ...(effort ? ['--effort', effort] : []),
+    ...(strictMcp ? ['--strict-mcp-config'] : []),
     '--mcp-config',
     mcpConfigPath,
   ]
