@@ -27,12 +27,12 @@ export function MainPanel({ agentId }: MainPanelProps) {
   const { data: runs } = useRuns(agentId)
   const deleteAgent = useDeleteAgent()
   const { user } = useAuth()
-  const { activeRunId, setActiveRun, selectAgent } = useUIStore()
+  const { activeRunId, setActiveRun, selectAgent, viewedRunId, setViewedRun } = useUIStore()
   const isOwner = agent?.ownerId === user?.id
   const queryClient = useQueryClient()
 
-  const [tab, setTab] = useState<Tab>('configure')
-  const [selectedHistoryRunId, setSelectedHistoryRunId] = useState<string | null>(null)
+  // Open on the runs tab when the URL deep-links a specific run.
+  const [tab, setTab] = useState<Tab>(viewedRunId ? 'runs' : 'configure')
 
   // Track live run status locally so RunControls can react
   const [liveRunStatus, setLiveRunStatus] = useState<RunStatus | null>(null)
@@ -78,7 +78,7 @@ export function MainPanel({ agentId }: MainPanelProps) {
 
   // Which terminal to show in the runs tab
   const showLiveTerminal = isLive && tab === 'runs'
-  const showReplayTerminal = !isLive && selectedHistoryRunId !== null && tab === 'runs'
+  const showReplayTerminal = !isLive && viewedRunId !== null && tab === 'runs'
 
   return (
     <div className="flex flex-col h-full" style={{ background: 'var(--bg-primary)' }}>
@@ -118,7 +118,8 @@ export function MainPanel({ agentId }: MainPanelProps) {
             activeRunStatus={liveRunStatus}
             activeRunStartedAt={liveRunStartedAt}
             onRunStarted={() => {
-              setSelectedHistoryRunId(null)
+              // setActiveRun (in RunControls) already points viewedRunId + URL at the
+              // new run; the live terminal takes precedence while it's running.
               setTab('runs')
             }}
           />
@@ -169,13 +170,11 @@ export function MainPanel({ agentId }: MainPanelProps) {
               <div className="h-full overflow-y-auto border-b border-[var(--border)]">
                 <RunHistory
                   agentId={agentId}
-                  selectedRunId={selectedHistoryRunId ?? activeRunId}
+                  selectedRunId={viewedRunId ?? activeRunId}
                   onSelectRun={(runId) => {
-                    setSelectedHistoryRunId(runId)
-                    // If clicking the active run, show live terminal
-                    if (runId === activeRunId) {
-                      setSelectedHistoryRunId(null)
-                    }
+                    // Sets viewedRunId + updates the URL for deep-linking. When it's
+                    // the active run and still live, showLiveTerminal takes precedence.
+                    setViewedRun(runId)
                   }}
                 />
               </div>
@@ -190,7 +189,7 @@ export function MainPanel({ agentId }: MainPanelProps) {
                   <TerminalPane runId={activeRunId} />
                 )}
                 {showReplayTerminal && (
-                  <RunDetail runId={selectedHistoryRunId!} />
+                  <RunDetail runId={viewedRunId!} />
                 )}
                 {!showLiveTerminal && !showReplayTerminal && (
                   <div className="flex items-center justify-center h-full text-sm text-[var(--text-secondary)]">

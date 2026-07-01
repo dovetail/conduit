@@ -5,6 +5,8 @@ type Theme = 'dark' | 'light' | 'system'
 interface UIState {
   selectedAgentId: string | null
   activeRunId: string | null
+  /** The run currently shown in the runs tab, reflected in the URL for deep-linking. */
+  viewedRunId: string | null
   theme: Theme
   sidebarWidth: number
   showGlobalMcpManager: boolean
@@ -13,6 +15,7 @@ interface UIState {
   // Actions
   selectAgent: (id: string | null) => void
   setActiveRun: (id: string | null) => void
+  setViewedRun: (id: string | null) => void
   setTheme: (theme: Theme) => void
   setSidebarWidth: (w: number) => void
   setShowGlobalMcpManager: (show: boolean) => void
@@ -70,14 +73,26 @@ if (typeof document !== 'undefined') {
 
 // ── URL routing helpers ───────────────────────────────────────────────────────
 
-function readUrlState(): { agentId: string | null; globalMcps: boolean; publishTargets: boolean; repositories: boolean } {
-  if (typeof window === 'undefined') return { agentId: null, globalMcps: false, publishTargets: false, repositories: false }
+interface UrlState {
+  agentId: string | null
+  runId: string | null
+  globalMcps: boolean
+  publishTargets: boolean
+  repositories: boolean
+}
+
+function readUrlState(): UrlState {
+  const empty: UrlState = { agentId: null, runId: null, globalMcps: false, publishTargets: false, repositories: false }
+  if (typeof window === 'undefined') return empty
   const path = window.location.pathname
   const globalMcps = path === '/global-mcps'
   const publishTargets = path === '/publish-targets'
   const repositories = path === '/repositories'
-  const m = path.match(/^\/agents\/([^/]+)$/)
-  return { agentId: m ? m[1] : null, globalMcps, publishTargets, repositories }
+  // /agents/:agentId/runs/:runId (deep link to a run) or /agents/:agentId
+  const runMatch = path.match(/^\/agents\/([^/]+)\/runs\/([^/]+)$/)
+  if (runMatch) return { ...empty, agentId: runMatch[1], runId: runMatch[2] }
+  const agentMatch = path.match(/^\/agents\/([^/]+)$/)
+  return { ...empty, agentId: agentMatch ? agentMatch[1] : null, globalMcps, publishTargets, repositories }
 }
 
 function pushUrl(path: string) {
@@ -88,9 +103,10 @@ function pushUrl(path: string) {
 
 const initialUrl = readUrlState()
 
-export const useUIStore = create<UIState>((set) => ({
+export const useUIStore = create<UIState>((set, get) => ({
   selectedAgentId: initialUrl.agentId,
   activeRunId: null,
+  viewedRunId: initialUrl.runId,
   theme: initialTheme,
   sidebarWidth: getStoredSidebarWidth(),
   showGlobalMcpManager: initialUrl.globalMcps,
@@ -99,10 +115,25 @@ export const useUIStore = create<UIState>((set) => ({
 
   selectAgent: (id) => {
     pushUrl(id ? `/agents/${id}` : '/')
-    set({ selectedAgentId: id, showGlobalMcpManager: false, showPublishTargets: false, showRepositories: false })
+    set({ selectedAgentId: id, viewedRunId: null, showGlobalMcpManager: false, showPublishTargets: false, showRepositories: false })
   },
 
-  setActiveRun: (id) => set({ activeRunId: id }),
+  setViewedRun: (id) => {
+    const agentId = get().selectedAgentId
+    if (agentId) pushUrl(id ? `/agents/${agentId}/runs/${id}` : `/agents/${agentId}`)
+    set({ viewedRunId: id })
+  },
+
+  // A run becoming active (e.g. just started) is also the run we navigate to.
+  setActiveRun: (id) => {
+    if (id) {
+      const agentId = get().selectedAgentId
+      if (agentId) pushUrl(`/agents/${agentId}/runs/${id}`)
+      set({ activeRunId: id, viewedRunId: id })
+    } else {
+      set({ activeRunId: null })
+    }
+  },
 
   setShowGlobalMcpManager: (show) => {
     pushUrl(show ? '/global-mcps' : '/')
@@ -138,3 +169,19 @@ export const useUIStore = create<UIState>((set) => ({
     set({ sidebarWidth: w })
   },
 }))
+
+// Keep store state in sync with browser back/forward navigation. popstate fires
+// after the URL has already changed, so we read it and update state without
+// pushing a new history entry.
+if (typeof window !== 'undefined') {
+  window.addEventListener('popstate', () => {
+    const s = readUrlState()
+    useUIStore.setState({
+      selectedAgentId: s.agentId,
+      viewedRunId: s.runId,
+      showGlobalMcpManager: s.globalMcps,
+      showPublishTargets: s.publishTargets,
+      showRepositories: s.repositories,
+    })
+  })
+}
