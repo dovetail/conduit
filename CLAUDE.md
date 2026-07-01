@@ -133,6 +133,12 @@ All data lives under `~/.conduit/` (or `$CONDUIT_DATA_DIR`):
 - `tsconfig.web.json` — Renderer/frontend (uses path aliases: `@renderer/`, `@shared/`)
 - `tsconfig.server.json` — Server compilation to `out/`
 
+## Design Docs & Planning Artifacts
+
+Brainstorming/design specs and implementation plans (under `docs/superpowers/`)
+are **local working artifacts — never commit them to repo history**. They live
+in the working tree only (gitignored) and are not shared through the repo.
+
 ## Testing Changes
 
 After modifying code, verify with:
