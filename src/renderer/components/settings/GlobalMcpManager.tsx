@@ -170,9 +170,11 @@ interface InlineFormProps {
   onCancel: () => void
   saving: boolean
   isDark: boolean
+  /** Server-side save error (e.g. a duplicate MCP name) to surface in the form. */
+  saveError?: string | null
 }
 
-function InlineForm({ initial, onSave, onCancel, saving, isDark }: InlineFormProps) {
+function InlineForm({ initial, onSave, onCancel, saving, isDark, saveError }: InlineFormProps) {
   const [form, setForm] = useState<FormState>(initial)
 
   const handleConfigChange = useCallback((val: string) => {
@@ -366,6 +368,12 @@ function InlineForm({ initial, onSave, onCancel, saving, isDark }: InlineFormPro
         </label>
       </div>
 
+      {saveError && (
+        <div className="text-xs px-3 py-2 rounded-md bg-red-500/10 text-red-400 border border-red-500/20">
+          {saveError}
+        </div>
+      )}
+
       <div className="flex items-center justify-end gap-2 pt-1">
         <Button variant="ghost" size="sm" onClick={onCancel} disabled={saving}>
           Cancel
@@ -455,6 +463,7 @@ function ServerRow({ server, isDark, isOwner, onShare }: ServerRowProps) {
         onCancel={() => setEditing(false)}
         saving={updateMcp.isPending}
         isDark={isDark}
+        saveError={updateMcp.error instanceof Error ? updateMcp.error.message : null}
       />
     )
   }
@@ -644,6 +653,7 @@ export function GlobalMcpManager() {
             onCancel={() => setShowAddForm(false)}
             saving={createMcp.isPending}
             isDark={isDark}
+            saveError={createMcp.error instanceof Error ? createMcp.error.message : null}
           />
         )}
 

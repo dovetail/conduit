@@ -3,7 +3,19 @@ import { getDb } from '../index'
 import { agents } from '../schema'
 import { getVisibleEntityIds } from './access'
 import { deleteSharesForEntity } from './shares'
+import { findAgentMcpKeyConflictWithGlobals } from './globalMcps'
 import type { AgentConfig, McpServersConfig } from '../../../shared/types'
+
+/** Reject agent MCP server keys that collide with an existing global MCP. */
+async function assertNoGlobalMcpKeyConflict(mcpConfig: McpServersConfig | undefined): Promise<void> {
+  const conflict = await findAgentMcpKeyConflictWithGlobals(Object.keys(mcpConfig?.mcpServers ?? {}))
+  if (conflict) {
+    throw new Error(
+      `This agent has an MCP named "${conflict}" that conflicts with a global MCP of the same name. ` +
+        'MCP names must be unique across global and agent scopes.'
+    )
+  }
+}
 
 function rowToAgentConfig(row: typeof agents.$inferSelect): AgentConfig {
   return {
@@ -43,6 +55,8 @@ export async function createAgent(
   const now = Date.now()
   const id = crypto.randomUUID()
 
+  await assertNoGlobalMcpKeyConflict(data.mcpConfig)
+
   await getDb().insert(agents).values({
     id,
     name: data.name,
@@ -73,6 +87,8 @@ export async function updateAgent(
   const updateValues: Partial<typeof agents.$inferInsert> = {
     updatedAt: now,
   }
+
+  if (data.mcpConfig !== undefined) await assertNoGlobalMcpKeyConflict(data.mcpConfig)
 
   if (data.name !== undefined) updateValues.name = data.name
   if (data.runner !== undefined) updateValues.runner = data.runner

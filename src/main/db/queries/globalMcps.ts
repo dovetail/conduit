@@ -18,6 +18,39 @@ function rowToGlobalMcpServer(row: typeof globalMcpServers.$inferSelect): Global
   }
 }
 
+/** MCP server keys are compared case-insensitively for uniqueness. */
+function normalizeKey(key: string): string {
+  return key.trim().toLowerCase()
+}
+
+/**
+ * If an existing global MCP has the same serverKey (case-insensitive) as
+ * `serverKey`, return its display name; otherwise null. Pass `excludeId` to
+ * ignore one row (the server itself when updating).
+ */
+export async function findGlobalMcpKeyConflict(serverKey: string, excludeId?: string): Promise<string | null> {
+  const target = normalizeKey(serverKey)
+  const rows = await getDb().select().from(globalMcpServers)
+  const hit = rows.find((r) => normalizeKey(r.serverKey) === target && r.id !== excludeId)
+  return hit ? hit.name : null
+}
+
+/**
+ * Given a set of agent MCP server keys, return the first that collides
+ * (case-insensitively) with an existing global MCP serverKey, or null if none.
+ * Agent and global MCPs share a namespace at run time (global + agent servers
+ * are merged by key), so a duplicate would silently shadow the global.
+ */
+export async function findAgentMcpKeyConflictWithGlobals(keys: string[]): Promise<string | null> {
+  if (keys.length === 0) return null
+  const rows = await getDb().select().from(globalMcpServers)
+  const globalKeys = new Set(rows.map((r) => normalizeKey(r.serverKey)))
+  for (const k of keys) {
+    if (globalKeys.has(normalizeKey(k))) return k
+  }
+  return null
+}
+
 export async function listGlobalMcps(userId: string, userGroupIds: string[]): Promise<GlobalMcpServer[]> {
   const visibleIds = await getVisibleEntityIds('globalMcpServer', userId, userGroupIds)
   if (visibleIds.length === 0) return []
@@ -36,6 +69,11 @@ export async function createGlobalMcp(
 ): Promise<GlobalMcpServer> {
   const now = Date.now()
   const id = crypto.randomUUID()
+
+  const conflict = await findGlobalMcpKeyConflict(data.serverKey)
+  if (conflict) {
+    throw new Error(`An MCP named "${data.serverKey}" already exists (global MCP "${conflict}"). MCP names must be unique.`)
+  }
 
   await getDb().insert(globalMcpServers).values({
     id,
@@ -64,7 +102,13 @@ export async function updateGlobalMcp(
   }
 
   if (data.name !== undefined) updateValues.name = data.name
-  if (data.serverKey !== undefined) updateValues.serverKey = data.serverKey
+  if (data.serverKey !== undefined) {
+    const conflict = await findGlobalMcpKeyConflict(data.serverKey, id)
+    if (conflict) {
+      throw new Error(`An MCP named "${data.serverKey}" already exists (global MCP "${conflict}"). MCP names must be unique.`)
+    }
+    updateValues.serverKey = data.serverKey
+  }
   if (data.serverConfig !== undefined) updateValues.serverConfig = JSON.stringify(data.serverConfig)
   if (data.enabled !== undefined) updateValues.enabled = data.enabled
 
