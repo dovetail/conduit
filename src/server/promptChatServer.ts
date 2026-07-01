@@ -81,11 +81,12 @@ export async function sendMessageServer(
   const agent = await getAgent(session.agentId)
   if (!agent) throw new Error('Agent not found')
 
-  const client = getAnthropicClient()
-
   try {
+    // Inside the try so a missing ANTHROPIC_API_KEY (or any client-init error)
+    // is surfaced to the UI as promptChat:error instead of hanging the throbber.
+    const client = getAnthropicClient()
     const stream = await client.messages.stream({
-      model: 'claude-opus-4-5',
+      model: 'claude-opus-4-8',
       max_tokens: 2048,
       system: buildSystemPrompt(agent),
       messages: session.messages,
