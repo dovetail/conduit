@@ -19,7 +19,7 @@ export function useMcpStatus(serverId: string | undefined, isGlobal: boolean) {
 export function useStartMcpAuth() {
   return useMutation({
     mutationFn: async ({ serverId, isGlobal }: { serverId: string; isGlobal: boolean }) => {
-      const { authUrl } = await api.mcpOAuth.startAuth(serverId, isGlobal)
+      const { authUrl } = await api.mcpOAuth.startAuth(serverId, isGlobal, window.location.origin)
       window.open(authUrl, '_blank', 'noopener,noreferrer')
     },
   })

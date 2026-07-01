@@ -618,8 +618,8 @@ const handlers: Record<string, HandlerFn> = {
   'groups:list': () => Promise.resolve(listGroups()),
 
   // MCP OAuth
-  'mcp:oauth:startAuth': ([serverId, isGlobal], _ws, ctx) =>
-    mcpStartAuth(serverId as string, isGlobal as boolean, ctx.userId, ctx.userGroupIds),
+  'mcp:oauth:startAuth': ([serverId, isGlobal, redirectOrigin], _ws, ctx) =>
+    mcpStartAuth(serverId as string, isGlobal as boolean, ctx.userId, ctx.userGroupIds, redirectOrigin as string | undefined),
   'mcp:oauth:getStatus': ([serverId, isGlobal], _ws, ctx) =>
     mcpGetStatus(serverId as string, isGlobal as boolean, ctx.userId, ctx.userGroupIds),
   'mcp:oauth:revoke': ([serverId, isGlobal], _ws, ctx) =>

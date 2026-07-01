@@ -257,8 +257,8 @@ export function createWsConduitClient(wsUrl: string): ConduitAPI {
     mcpOAuth: {
       getStatus: (serverId: string, isGlobal: boolean) =>
         invoke<McpOAuthStatus>('mcp:oauth:getStatus', serverId, isGlobal),
-      startAuth: (serverId: string, isGlobal: boolean) =>
-        invoke<{ authUrl: string }>('mcp:oauth:startAuth', serverId, isGlobal),
+      startAuth: (serverId: string, isGlobal: boolean, redirectOrigin?: string) =>
+        invoke<{ authUrl: string }>('mcp:oauth:startAuth', serverId, isGlobal, redirectOrigin),
       revoke: (serverId: string, isGlobal: boolean) =>
         invoke<void>('mcp:oauth:revoke', serverId, isGlobal),
       probe: (serverConfig: McpServerEntry) =>

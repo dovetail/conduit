@@ -40,7 +40,7 @@ async function maybeKickOAuth(serverId: string, cfg: McpServerEntry) {
     // Source of truth: does an authenticated request actually succeed?
     const health = await api.globalMcps.checkHealth(cfg)
     if (health.status === 'healthy') return
-    const { authUrl } = await api.mcpOAuth.startAuth(serverId, true)
+    const { authUrl } = await api.mcpOAuth.startAuth(serverId, true, window.location.origin)
     const win = window.open(authUrl, '_blank', 'noopener,noreferrer')
     if (!win) {
       // Popup blocked — the Authenticate button remains as the reliable fallback.

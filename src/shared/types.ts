@@ -482,7 +482,7 @@ export interface ConduitAPI {
   onTriggerFired: (cb: (payload: TriggerFiredPayload) => void) => () => void
   mcpOAuth: {
     getStatus: (serverId: string, isGlobal: boolean) => Promise<McpOAuthStatus>
-    startAuth: (serverId: string, isGlobal: boolean) => Promise<{ authUrl: string }>
+    startAuth: (serverId: string, isGlobal: boolean, redirectOrigin?: string) => Promise<{ authUrl: string }>
     revoke: (serverId: string, isGlobal: boolean) => Promise<void>
     probe: (serverConfig: McpServerEntry) => Promise<McpOAuthProbeResult>
   }

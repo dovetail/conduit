@@ -11,8 +11,14 @@ import { isUrlMcpServer } from '../../shared/mcp'
 
 const GLOBAL_OWNER = '__global__'
 
-export function getRedirectUri(): string {
-  const base = (process.env.CONDUIT_BASE_URL ?? 'http://localhost:7456').replace(/\/$/, '')
+/**
+ * Build the OAuth callback URL. Prefer the origin the browser is actually using
+ * (passed from the client) so the redirect returns to the same host the console
+ * was opened on, falling back to CONDUIT_BASE_URL then localhost.
+ */
+export function getRedirectUri(origin?: string): string {
+  const raw = origin?.trim() || process.env.CONDUIT_BASE_URL || 'http://localhost:7456'
+  const base = raw.replace(/\/$/, '')
   return `${base}/mcp/oauth/callback`
 }
 
@@ -47,10 +53,10 @@ async function assertAccess(t: ServerTarget, userId: string, userGroupIds: strin
   }
 }
 
-export async function startAuth(serverId: string, isGlobal: boolean, userId: string, userGroupIds: string[] = []): Promise<{ authUrl: string }> {
+export async function startAuth(serverId: string, isGlobal: boolean, userId: string, userGroupIds: string[] = [], redirectOrigin?: string): Promise<{ authUrl: string }> {
   const t = await resolveServerTarget(serverId, isGlobal, userId)
   await assertAccess(t, userId, userGroupIds)
-  const redirectUri = getRedirectUri()
+  const redirectUri = getRedirectUri(redirectOrigin)
   const client = await ensureRegisteredClient(t.serverUrl, t.oauthConfig, redirectUri)
   const { verifier, challenge } = generatePkce()
   const state = crypto.randomBytes(16).toString('hex')
