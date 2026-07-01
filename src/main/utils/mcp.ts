@@ -31,7 +31,7 @@ export async function injectOAuthTokens(config: McpServersConfig): Promise<McpSe
   const updated: Record<string, McpServerEntry> = {}
   for (const [key, entry] of Object.entries(config.mcpServers)) {
     if (entry.type === 'url' && entry.url) {
-      const token = await getToken(entry.url)
+      const token = await getToken(entry.url, '__global__')
       if (token && (!token.expiresAt || token.expiresAt > Date.now())) {
         updated[key] = {
           ...entry,

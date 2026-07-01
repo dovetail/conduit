@@ -105,6 +105,14 @@ export interface OAuthToken {
   scope?: string
 }
 
+export interface McpOAuthStatus {
+  connected: boolean
+  connectedByUserId?: string
+  connectedByName?: string
+  scope: 'user' | 'global'
+  expiresAt?: number
+}
+
 export interface McpServersConfig {
   mcpServers: Record<string, McpServerEntry>
 }
