@@ -24,19 +24,22 @@ import { isUrlMcpServer } from '@shared/mcp'
 import type { GlobalMcpServer, McpServerEntry, McpOAuthConfig } from '@shared/types'
 
 /**
- * If a URL MCP server supports OAuth and isn't already connected, start the auth
- * flow and open the authorization window. No-op for stdio servers, non-OAuth
- * servers, or servers with a still-valid token. Best-effort — the popup may be
- * blocked, in which case the Authenticate button remains as the reliable fallback.
+ * If a URL MCP server supports OAuth and isn't *actually* connected, start the
+ * auth flow and open the authorization window. "Connected" is judged by the
+ * token-aware health check (a real authenticated request) rather than by whether
+ * a token row merely exists — so a stale/invalid/shared-URL token still prompts
+ * a login. No-op for stdio/non-OAuth servers or ones that authenticate cleanly.
+ * Best-effort — the popup may be blocked, so the Authenticate button remains as
+ * the reliable fallback.
  */
 async function maybeKickOAuth(serverId: string, cfg: McpServerEntry) {
   if (!isUrlMcpServer(cfg)) return
   try {
     const probe = cfg.oauth ? { supportsOAuth: true } : await api.mcpOAuth.probe(cfg)
     if (!probe.supportsOAuth) return
-    const status = await api.mcpOAuth.getStatus(serverId, true)
-    const valid = status.connected && (status.expiresAt === undefined || status.expiresAt > Date.now())
-    if (valid) return
+    // Source of truth: does an authenticated request actually succeed?
+    const health = await api.globalMcps.checkHealth(cfg)
+    if (health.status === 'healthy') return
     const { authUrl } = await api.mcpOAuth.startAuth(serverId, true)
     const win = window.open(authUrl, '_blank', 'noopener,noreferrer')
     if (!win) {

@@ -278,12 +278,24 @@ const handlers: Record<string, HandlerFn> = {
 
     if (isUrlMcpServer(config) && config.url) {
       try {
+        // Reflect real auth state: send the stored global OAuth token (refreshed
+        // if expired) so an authenticated server reads as healthy, and one that
+        // still 401s (no/invalid token) reads as needing authentication — rather
+        // than every OAuth server showing 401 to an unauthenticated probe.
+        const headers: Record<string, string> = { Accept: '*/*' }
+        try {
+          const { resolveGlobalMcpToken } = await import('../main/utils/mcp')
+          const token = await resolveGlobalMcpToken(config.url)
+          if (token) headers.Authorization = `${token.tokenType} ${token.accessToken}`
+        } catch {
+          // No token resolvable — fall through to an unauthenticated probe.
+        }
         const controller = new AbortController()
         const timeout = setTimeout(() => controller.abort(), 4000)
         const res = await fetch(config.url, {
           method: 'GET',
           signal: controller.signal,
-          headers: { Accept: '*/*' },
+          headers,
         })
         clearTimeout(timeout)
         return classifyUrlHealth(res.status, res.statusText)

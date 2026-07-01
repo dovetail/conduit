@@ -51,6 +51,15 @@ async function resolveValidToken(url: string, owner: string): Promise<OAuthToken
   }
 }
 
+/**
+ * Resolve a valid global OAuth token for a server URL (refreshing if expired),
+ * or null if none/invalid. Used by the health check so it reflects real auth
+ * state rather than an unauthenticated probe.
+ */
+export function resolveGlobalMcpToken(url: string): Promise<OAuthToken | null> {
+  return resolveValidToken(url, GLOBAL_OWNER)
+}
+
 export async function injectOAuthTokens(
   config: McpServersConfig,
   actingUserId: string,
