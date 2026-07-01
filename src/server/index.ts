@@ -54,6 +54,8 @@ import {
 } from '../main/db/queries/triggers'
 import { TriggerService } from './triggers/triggerService'
 import { createTriggerRoutes } from './triggers/triggerRoutes'
+import { createMcpOAuthRouter } from './mcpOAuth/routes'
+import { startAuth as mcpStartAuth, getStatus as mcpGetStatus, revoke as mcpRevoke } from './mcpOAuth/service'
 import { listMcpTools } from './mcpTools'
 import { getGithubPat } from './store'
 import { readLogFile } from './utils'
@@ -70,6 +72,7 @@ import { getShare, listShares, createShare, deleteShare } from '../main/db/queri
 import { listUsers, searchUsers } from '../main/db/queries/users'
 import { listGroups, getUserGroupIds } from '../main/db/queries/groups'
 import { getSession as getDbSession, deleteExpiredSessions } from '../main/db/queries/sessions'
+import { ensureLocalSecretKey } from './localSecret'
 import type {
   AgentConfig,
   GlobalMcpServer,
@@ -82,6 +85,9 @@ import type {
   RequestContext,
   ShareableEntityType,
 } from '../shared/types'
+
+// Ensure a local encryption key exists for dev before anything touches crypto/DB.
+ensureLocalSecretKey()
 
 const PORT = process.env.PORT || 7456
 
@@ -124,6 +130,10 @@ app.use(cookieParser())
 
 // Auth routes (login, callback, logout, me) — no session required
 app.use('/auth', authRoutes)
+
+// MCP OAuth callback route — must be before sessionMiddleware so the OAuth
+// provider's redirect arrives without requiring a Conduit session cookie.
+app.use('/mcp/oauth', createMcpOAuthRouter(broadcast))
 
 // Session middleware — validates session cookie, attaches RequestContext to req
 app.use(sessionMiddleware)
@@ -549,6 +559,14 @@ const handlers: Record<string, HandlerFn> = {
 
   // Groups
   'groups:list': () => Promise.resolve(listGroups()),
+
+  // MCP OAuth
+  'mcp:oauth:startAuth': ([serverId, isGlobal], _ws, ctx) =>
+    mcpStartAuth(serverId as string, isGlobal as boolean, ctx.userId, ctx.userGroupIds),
+  'mcp:oauth:getStatus': ([serverId, isGlobal], _ws, ctx) =>
+    mcpGetStatus(serverId as string, isGlobal as boolean, ctx.userId, ctx.userGroupIds),
+  'mcp:oauth:revoke': ([serverId, isGlobal], _ws, ctx) =>
+    mcpRevoke(serverId as string, isGlobal as boolean, ctx.userId, ctx.userGroupIds),
 }
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────

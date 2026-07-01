@@ -29,3 +29,9 @@ release/
 
 # Superpowers brainstorm sessions
 .superpowers/
+
+# Local-only design specs & planning artifacts (never committed)
+docs/superpowers/
+
+# Locally-generated encryption key for dev (CONDUIT_SECRET_KEY)
+.conduit.key

@@ -75,6 +75,11 @@ export async function updateGlobalMcp(
   return rowToGlobalMcpServer(rows[0])
 }
 
+export async function getGlobalMcp(id: string): Promise<GlobalMcpServer | null> {
+  const rows = await getDb().select().from(globalMcpServers).where(eq(globalMcpServers.id, id))
+  return rows.length ? rowToGlobalMcpServer(rows[0]) : null
+}
+
 export async function deleteGlobalMcp(id: string): Promise<void> {
   await deleteSharesForEntity('globalMcpServer', id)
   await getDb().delete(globalMcpServers).where(eq(globalMcpServers.id, id))

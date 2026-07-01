@@ -231,6 +231,39 @@ export async function initDb(): Promise<void> {
     ALTER TABLE repositories ADD COLUMN IF NOT EXISTS github_app_id TEXT;
     ALTER TABLE repositories ADD COLUMN IF NOT EXISTS github_private_key_enc TEXT;
     ALTER TABLE runs ADD COLUMN IF NOT EXISTS started_by TEXT;
+    ALTER TABLE oauth_tokens ADD COLUMN IF NOT EXISTS token_owner TEXT NOT NULL DEFAULT '__global__';
+    ALTER TABLE oauth_tokens ADD COLUMN IF NOT EXISTS connected_by_user_id TEXT;
+
+    CREATE TABLE IF NOT EXISTS mcp_oauth_clients (
+      server_url TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      client_secret_enc TEXT,
+      authorization_endpoint TEXT NOT NULL,
+      token_endpoint TEXT NOT NULL,
+      registration_data TEXT,
+      created_at BIGINT NOT NULL,
+      updated_at BIGINT NOT NULL
+    );
+  `)
+
+  // Guarded primary-key swap for oauth_tokens: drop the old single-column PK
+  // and replace it with a composite (server_url, token_owner) PK — but only if
+  // the table still has a single-column primary key. Run as a separate statement
+  // because DO $$ blocks contain internal semicolons that must not be split by
+  // the caller; pool.query() sends the full string to Postgres intact, so a
+  // single-statement call is the safest approach.
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'oauth_tokens'::regclass AND contype = 'p'
+          AND array_length(conkey, 1) = 2
+      ) THEN
+        ALTER TABLE oauth_tokens DROP CONSTRAINT IF EXISTS oauth_tokens_pkey;
+        ALTER TABLE oauth_tokens ADD PRIMARY KEY (server_url, token_owner);
+      END IF;
+    END $$;
   `)
 }
 
