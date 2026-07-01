@@ -8,33 +8,100 @@ export interface OAuthServerMetadata {
   registration_endpoint?: string
 }
 
+/** Fetch an AS metadata document and return it if it has the required fields, null otherwise. */
+async function fetchAsMetadata(metadataUrl: string): Promise<OAuthServerMetadata | null> {
+  try {
+    const res = await fetch(metadataUrl, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000) })
+    if (!res.ok) return null
+    const data = (await res.json()) as Record<string, unknown>
+    if (typeof data.authorization_endpoint === 'string' && typeof data.token_endpoint === 'string') {
+      return {
+        authorization_endpoint: data.authorization_endpoint,
+        token_endpoint: data.token_endpoint,
+        registration_endpoint:
+          typeof data.registration_endpoint === 'string' ? data.registration_endpoint : undefined,
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 export async function discoverOAuthEndpoints(serverUrl: string): Promise<OAuthServerMetadata> {
   const base = serverUrl.replace(/\/$/, '')
-  const candidates = [
+  // origin is used for RFC 9728 fallback PRM path (always host-rooted)
+  let origin: string
+  try {
+    origin = new URL(serverUrl).origin
+  } catch {
+    origin = base
+  }
+
+  // Step 1: Try base well-known candidates directly.
+  const baseCandidates = [
     `${base}/.well-known/oauth-authorization-server`,
     `${base}/.well-known/openid-configuration`,
   ]
-  for (const url of candidates) {
+  for (const url of baseCandidates) {
+    const meta = await fetchAsMetadata(url)
+    if (meta) return meta
+  }
+
+  // Step 2: Protected-resource-metadata path (RFC 9728 / MCP auth).
+  try {
+    // 2a. Fetch the resource URL itself to get the WWW-Authenticate header.
+    let prmUrl: string | null = null
     try {
-      const res = await fetch(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000) })
-      if (!res.ok) continue
-      const data = (await res.json()) as Record<string, unknown>
-      if (typeof data.authorization_endpoint === 'string' && typeof data.token_endpoint === 'string') {
-        return {
-          authorization_endpoint: data.authorization_endpoint,
-          token_endpoint: data.token_endpoint,
-          registration_endpoint:
-            typeof data.registration_endpoint === 'string' ? data.registration_endpoint : undefined,
+      const resourceRes = await fetch(serverUrl, {
+        method: 'GET',
+        headers: { Accept: '*/*' },
+        signal: AbortSignal.timeout(5000),
+      })
+      const wwwAuth = resourceRes.headers.get('www-authenticate') ?? resourceRes.headers.get('WWW-Authenticate')
+      if (wwwAuth) {
+        const match = /resource_metadata="([^"]+)"/.exec(wwwAuth)
+        if (match) {
+          prmUrl = match[1]
         }
       }
     } catch {
-      // try next candidate
+      // network failure for resource fetch — proceed to fallback PRM URL
     }
+
+    // Fall back to <origin>/.well-known/oauth-protected-resource if no explicit URL.
+    if (!prmUrl) {
+      prmUrl = `${origin}/.well-known/oauth-protected-resource`
+    }
+
+    // 2b. Fetch the PRM document.
+    const prmRes = await fetch(prmUrl, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000) })
+    if (prmRes.ok) {
+      const prmData = (await prmRes.json()) as Record<string, unknown>
+      const authorizationServers = Array.isArray(prmData.authorization_servers)
+        ? (prmData.authorization_servers as unknown[])
+        : []
+      if (authorizationServers.length > 0 && typeof authorizationServers[0] === 'string') {
+        const asBase = (authorizationServers[0] as string).replace(/\/$/, '')
+        // 2c. Try AS well-known candidates.
+        const asCandidates = [
+          `${asBase}/.well-known/oauth-authorization-server`,
+          `${asBase}/.well-known/openid-configuration`,
+        ]
+        for (const url of asCandidates) {
+          const meta = await fetchAsMetadata(url)
+          if (meta) return meta
+        }
+      }
+    }
+  } catch {
+    // PRM path failed entirely — fall through to error
   }
+
   throw new Error(
-    `Could not discover OAuth endpoints for ${serverUrl}. Neither ` +
-      `/.well-known/oauth-authorization-server nor /.well-known/openid-configuration ` +
-      `returned authorization_endpoint and token_endpoint.`
+    `Could not discover OAuth endpoints for ${serverUrl}. Tried ` +
+      `/.well-known/oauth-authorization-server, /.well-known/openid-configuration, ` +
+      `and the protected-resource-metadata path (RFC 9728).`
   )
 }
 

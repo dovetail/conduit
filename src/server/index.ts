@@ -57,6 +57,7 @@ import { createTriggerRoutes } from './triggers/triggerRoutes'
 import { createMcpOAuthRouter } from './mcpOAuth/routes'
 import { startAuth as mcpStartAuth, getStatus as mcpGetStatus, revoke as mcpRevoke, probeOAuthSupport as mcpProbe } from './mcpOAuth/service'
 import { listMcpTools } from './mcpTools'
+import { classifyUrlHealth } from './mcpHealth'
 import { getGithubPat } from './store'
 import { readLogFile } from './utils'
 import { Octokit } from '@octokit/rest'
@@ -285,7 +286,7 @@ const handlers: Record<string, HandlerFn> = {
           headers: { Accept: '*/*' },
         })
         clearTimeout(timeout)
-        return { status: 'healthy', message: `HTTP ${res.status} ${res.statusText}` }
+        return classifyUrlHealth(res.status, res.statusText)
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Connection failed'
         return { status: 'unhealthy', message: msg }
