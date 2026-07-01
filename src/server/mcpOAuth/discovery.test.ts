@@ -43,6 +43,7 @@ describe('discovery', () => {
     // Cached — a second call must not hit the network again
     const again = await ensureRegisteredClient('https://mcp.example.com', undefined, 'http://localhost:7456/mcp/oauth/callback')
     expect(again.clientId).toBe('dcr-123')
+    expect(vi.mocked(fetch).mock.calls.length).toBe(2)
   })
 
   it('falls back to a manual clientId when no registration_endpoint', async () => {
