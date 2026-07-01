@@ -45,7 +45,7 @@ import { RepoSyncService } from './repoSync'
 import { encryptSecret } from './crypto'
 import { mintInstallationToken, resolveRepoToken } from './githubApp'
 import { isUrlMcpServer } from '../shared/mcp'
-import { testPublishTarget } from './publisher'
+import { testPublishTarget, checkPublishTargetHealth } from './publisher'
 import {
   listTriggers,
   getTrigger,
@@ -396,6 +396,11 @@ const handlers: Record<string, HandlerFn> = {
   },
   'publishTargets:test': ([type, config]) =>
     testPublishTarget(
+      type as import('../shared/types').PublishTargetType,
+      config as import('../shared/types').PublishConfig
+    ),
+  'publishTargets:checkHealth': ([type, config]) =>
+    checkPublishTargetHealth(
       type as import('../shared/types').PublishTargetType,
       config as import('../shared/types').PublishConfig
     ),

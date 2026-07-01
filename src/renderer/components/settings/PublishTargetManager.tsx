@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Plus, Pencil, Trash2, Info, Loader2, X, Check, Send, Mail, Globe, Share2 } from 'lucide-react'
+import { Plus, Pencil, Trash2, Info, Loader2, X, Check, Send, Mail, Globe, Share2, RefreshCw } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { ShareDialog } from '@renderer/components/ShareDialog'
@@ -9,6 +9,7 @@ import {
   useUpdatePublishTarget,
   useDeletePublishTarget,
   useTestPublishTarget,
+  usePublishTargetHealth,
 } from '@renderer/hooks/usePublishTargets'
 import { useAuth } from '@renderer/contexts/AuthContext'
 import { cn } from '@renderer/lib/utils'
@@ -346,9 +347,11 @@ interface InlineFormProps {
   onSave: (form: FormState) => void
   onCancel: () => void
   saving: boolean
+  /** Existing target id — enables the live connection-status indicator in the detail view. */
+  targetId?: string
 }
 
-function InlineForm({ initial, onSave, onCancel, saving }: InlineFormProps) {
+function InlineForm({ initial, onSave, onCancel, saving, targetId }: InlineFormProps) {
   const [form, setForm] = useState<FormState>(initial)
   const testMutation = useTestPublishTarget()
 
@@ -407,6 +410,14 @@ function InlineForm({ initial, onSave, onCancel, saving }: InlineFormProps) {
         <label htmlFor="pt-form-enabled" className="text-xs text-[var(--text-secondary)] cursor-pointer">Enabled</label>
       </div>
 
+      {/* Connection status (Slack, existing target) */}
+      {form.type === 'slack' && targetId && (
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-[var(--text-secondary)]">Connection:</span>
+          <PublishTargetHealthDot id={targetId} type={form.type} config={formToConfig(form)} showLabel />
+        </div>
+      )}
+
       {/* Test result */}
       {testMutation.data?.success && (
         <div className="text-xs px-3 py-2 rounded-md bg-green-500/10 text-green-400 border border-green-500/20">
@@ -439,6 +450,62 @@ function InlineForm({ initial, onSave, onCancel, saving }: InlineFormProps) {
 
 // ── Target row ───────────────────────────────────────────────────────────────
 
+/**
+ * Connection-status indicator for a publish target, mirroring the MCP health dot.
+ * Only Slack targets are validated; for other types it renders nothing.
+ * `showLabel` renders the status text inline (detail view); otherwise just the
+ * dot with a hover refresh affordance (list view). Click to re-check.
+ */
+function PublishTargetHealthDot({
+  id,
+  type,
+  config,
+  showLabel = false,
+}: {
+  id: string
+  type: PublishTargetType
+  config: PublishConfig
+  showLabel?: boolean
+}) {
+  const { data, isLoading, isFetching, refetch } = usePublishTargetHealth(id, type, config, type === 'slack')
+  if (type !== 'slack') return null
+
+  const pending = isLoading || isFetching
+  const color = pending
+    ? '#F59E0B'
+    : data?.status === 'healthy'
+    ? '#22C55E'
+    : data?.status === 'unauthorized'
+    ? '#F59E0B'
+    : '#EF4444'
+  const label = pending
+    ? 'Checking…'
+    : data?.status === 'healthy'
+    ? `Connected · ${data.message}`
+    : data?.status === 'unauthorized'
+    ? `Authentication required · ${data.message}`
+    : `Not connected · ${data?.message ?? 'Unknown error'}`
+
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); void refetch() }}
+      title={label}
+      className="flex items-center gap-1.5 flex-shrink-0 group min-w-0"
+      aria-label={label}
+    >
+      <span
+        className={cn('inline-block w-2 h-2 rounded-full transition-colors flex-shrink-0', pending && 'animate-pulse')}
+        style={{ backgroundColor: color }}
+      />
+      {showLabel ? (
+        <span className="text-xs text-[var(--text-secondary)] truncate">{label}</span>
+      ) : (
+        <RefreshCw className="h-2.5 w-2.5 text-[var(--text-secondary)] opacity-0 group-hover:opacity-60 transition-opacity" />
+      )}
+    </button>
+  )
+}
+
 function TargetRow({ target, isOwner, onShare }: { target: PublishTarget; isOwner: boolean; onShare: () => void }) {
   const [editing, setEditing] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -460,7 +527,7 @@ function TargetRow({ target, isOwner, onShare }: { target: PublishTarget; isOwne
   }
 
   if (editing) {
-    return <InlineForm initial={formFromTarget(target)} onSave={handleSave} onCancel={() => setEditing(false)} saving={updateTarget.isPending} />
+    return <InlineForm initial={formFromTarget(target)} onSave={handleSave} onCancel={() => setEditing(false)} saving={updateTarget.isPending} targetId={target.id} />
   }
 
   return (
@@ -476,6 +543,7 @@ function TargetRow({ target, isOwner, onShare }: { target: PublishTarget; isOwne
         </p>
         <p className="text-xs text-[var(--text-secondary)] truncate">{targetSubtitle(target)}</p>
       </div>
+      <PublishTargetHealthDot id={target.id} type={target.type} config={target.config} />
       <div className="flex items-center gap-1 flex-shrink-0">
         {isOwner && (
           <button onClick={onShare} className="p-1.5 rounded-md text-[var(--text-secondary)] hover:bg-[var(--bg-primary)] hover:text-[var(--text-primary)] transition-colors" title="Share">

@@ -327,6 +327,12 @@ export interface PublishTarget {
   updatedAt: number
 }
 
+/** Connection-validation result for a publish target (mirrors McpHealthResult). */
+export interface PublishTargetHealthResult {
+  status: 'healthy' | 'unhealthy' | 'unauthorized'
+  message: string
+}
+
 // ── Triggers ────────────────────────────────────────────────────────────────
 
 export type TriggerType = 'cron' | 'slack' | 'webhook'
@@ -433,6 +439,7 @@ export interface ConduitAPI {
     update: (id: string, data: Partial<Omit<PublishTarget, 'id' | 'createdAt' | 'updatedAt'>>) => Promise<PublishTarget>
     delete: (id: string) => Promise<void>
     test: (type: PublishTargetType, config: PublishConfig) => Promise<{ success: boolean; error?: string }>
+    checkHealth: (type: PublishTargetType, config: PublishConfig) => Promise<PublishTargetHealthResult>
   }
   triggers: {
     list: (agentId: string) => Promise<Trigger[]>

@@ -231,6 +231,8 @@ export function createWsConduitClient(wsUrl: string): ConduitAPI {
       delete: (id: string) => invoke<void>('publishTargets:delete', id),
       test: (type: import('@shared/types').PublishTargetType, config: import('@shared/types').PublishConfig) =>
         invoke<{ success: boolean; error?: string }>('publishTargets:test', type, config),
+      checkHealth: (type: import('@shared/types').PublishTargetType, config: import('@shared/types').PublishConfig) =>
+        invoke<import('@shared/types').PublishTargetHealthResult>('publishTargets:checkHealth', type, config),
     },
 
     triggers: {

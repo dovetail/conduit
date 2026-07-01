@@ -1,5 +1,5 @@
 import * as crypto from 'crypto'
-import type { ExecutionRun, SlackPublishConfig, EmailPublishConfig, WebhookPublishConfig, PublishTargetType, PublishConfig } from '../shared/types'
+import type { ExecutionRun, SlackPublishConfig, EmailPublishConfig, WebhookPublishConfig, PublishTargetType, PublishConfig, PublishTargetHealthResult } from '../shared/types'
 import { getPublishTarget } from '../main/db/queries/publishTargets'
 import { getAgent } from '../main/db/queries/agents'
 import { readLogFile } from './utils'
@@ -216,6 +216,71 @@ export async function testPublishTarget(
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) }
   }
+}
+
+// ── Health / connection validation ─────────────────────────────────────────────
+
+// Slack API errors that specifically indicate an auth/token problem (vs. a
+// transient or configuration error) — surfaced as 'unauthorized' so the UI can
+// flag that the bot token needs attention.
+const SLACK_AUTH_ERRORS = new Set([
+  'invalid_auth',
+  'not_authed',
+  'token_revoked',
+  'token_expired',
+  'account_inactive',
+  'no_permission',
+  'missing_scope',
+])
+
+/**
+ * Validate a Slack publish target's connection without sending a message.
+ * Bot-token configs are checked via Slack's `auth.test`; webhook-only configs
+ * can't be verified without posting, so a well-formed hook URL is reported as
+ * configured.
+ */
+export async function checkSlackHealth(config: SlackPublishConfig): Promise<PublishTargetHealthResult> {
+  if (config.botToken) {
+    try {
+      const res = await fetch('https://slack.com/api/auth.test', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${config.botToken}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        signal: AbortSignal.timeout(5000),
+      })
+      const data = (await res.json()) as { ok: boolean; error?: string; user?: string; team?: string }
+      if (data.ok) {
+        const who = [data.user, data.team].filter(Boolean).join(' · ')
+        return { status: 'healthy', message: who ? `Connected as ${who}` : 'Connected' }
+      }
+      if (data.error && SLACK_AUTH_ERRORS.has(data.error)) {
+        return { status: 'unauthorized', message: `Auth failed: ${data.error}` }
+      }
+      return { status: 'unhealthy', message: `Slack error: ${data.error ?? 'unknown'}` }
+    } catch (err) {
+      return { status: 'unhealthy', message: err instanceof Error ? err.message : 'Connection failed' }
+    }
+  }
+  if (config.webhookUrl) {
+    return /^https:\/\/hooks\.slack\.com\//.test(config.webhookUrl)
+      ? { status: 'healthy', message: 'Webhook configured (not verifiable without sending)' }
+      : { status: 'unhealthy', message: 'Does not look like a Slack incoming webhook URL' }
+  }
+  return { status: 'unhealthy', message: 'No bot token or webhook URL configured' }
+}
+
+/**
+ * Validate a publish target's connection. Slack is checked live; other types
+ * have no lightweight connection check, so they report as configured.
+ */
+export async function checkPublishTargetHealth(
+  type: PublishTargetType,
+  config: PublishConfig
+): Promise<PublishTargetHealthResult> {
+  if (type === 'slack') return checkSlackHealth(config as SlackPublishConfig)
+  return { status: 'healthy', message: 'Configured' }
 }
 
 // ── Publish run result ───────────────────────────────────────────────────────

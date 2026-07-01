@@ -62,3 +62,18 @@ export function useTestPublishTarget() {
       api.publishTargets.test(type, config),
   })
 }
+
+/**
+ * Connection/health check for a publish target (mirrors useMcpHealth). Keyed by
+ * a caller-supplied id so the list and detail views can each cache their own.
+ */
+export function usePublishTargetHealth(id: string, type: PublishTargetType, config: PublishConfig, enabled = true) {
+  return useQuery({
+    queryKey: ['publishTargetHealth', id],
+    queryFn: () => api.publishTargets.checkHealth(type, config),
+    staleTime: 30_000,
+    gcTime: 60_000,
+    retry: 0,
+    enabled,
+  })
+}
