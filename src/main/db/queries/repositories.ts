@@ -36,6 +36,8 @@ function rowToRepository(row: typeof repositories.$inferSelect): Repository {
     githubAppId: row.githubAppId ?? undefined,
     // Never expose the encrypted key — surface only whether one is stored.
     hasGithubKey: !!row.githubPrivateKeyEnc,
+    commitAuthorName: row.commitAuthorName ?? undefined,
+    commitAuthorEmail: row.commitAuthorEmail ?? undefined,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }
@@ -89,6 +91,8 @@ export async function createRepository(
     ownerId,
     githubAppId: data.githubAppId ?? null,
     githubPrivateKeyEnc: data.githubPrivateKeyEnc ?? null,
+    commitAuthorName: data.commitAuthorName ?? null,
+    commitAuthorEmail: data.commitAuthorEmail ?? null,
     createdAt: now,
     updatedAt: now,
   })
@@ -111,6 +115,8 @@ export async function updateRepository(
   if (data.name !== undefined) updateValues.name = data.name
   if (data.url !== undefined) updateValues.url = data.url
   if (data.defaultBranch !== undefined) updateValues.defaultBranch = data.defaultBranch
+  if ('commitAuthorName' in data) updateValues.commitAuthorName = data.commitAuthorName || null
+  if ('commitAuthorEmail' in data) updateValues.commitAuthorEmail = data.commitAuthorEmail || null
   if (data.syncStatus !== undefined) updateValues.syncStatus = data.syncStatus
   if ('syncError' in data) updateValues.syncError = data.syncError ?? null
   if ('lastSyncedAt' in data) updateValues.lastSyncedAt = data.lastSyncedAt ?? null

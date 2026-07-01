@@ -57,6 +57,8 @@ interface FormState {
   githubPrivateKey: string
   /** Whether the repo already has a stored GitHub App key. */
   hasGithubKey: boolean
+  commitAuthorName: string
+  commitAuthorEmail: string
 }
 
 function emptyForm(): FormState {
@@ -68,6 +70,8 @@ function emptyForm(): FormState {
     githubAppId: '',
     githubPrivateKey: '',
     hasGithubKey: false,
+    commitAuthorName: '',
+    commitAuthorEmail: '',
   }
 }
 
@@ -80,6 +84,8 @@ function formFromRepo(repo: Repository): FormState {
     githubAppId: repo.githubAppId ?? '',
     githubPrivateKey: '',
     hasGithubKey: !!repo.hasGithubKey,
+    commitAuthorName: repo.commitAuthorName ?? '',
+    commitAuthorEmail: repo.commitAuthorEmail ?? '',
   }
 }
 
@@ -90,6 +96,8 @@ function formToInput(form: FormState): RepositoryInput {
     url: form.url.trim(),
     defaultBranch: form.defaultBranch.trim(),
     authMethod: form.authMethod,
+    commitAuthorName: form.commitAuthorName.trim() || undefined,
+    commitAuthorEmail: form.commitAuthorEmail.trim() || undefined,
   }
   if (form.authMethod === 'githubapp') {
     base.githubAppId = form.githubAppId.trim()
@@ -215,6 +223,31 @@ function InlineForm({ initial, onSave, onCancel, saving, repoId }: InlineFormPro
           placeholder="main"
           className="text-xs w-48"
         />
+      </div>
+
+      {/* Commit identity ("commit as") */}
+      <div className="space-y-1">
+        <label className="block text-xs font-medium text-[var(--text-secondary)]">
+          Commit As
+        </label>
+        <div className="flex gap-2">
+          <Input
+            value={form.commitAuthorName}
+            onChange={(e) => setForm((f) => ({ ...f, commitAuthorName: e.target.value }))}
+            placeholder="Conduit"
+            className="text-xs flex-1"
+          />
+          <Input
+            value={form.commitAuthorEmail}
+            onChange={(e) => setForm((f) => ({ ...f, commitAuthorEmail: e.target.value }))}
+            placeholder="conduit@dovetail.com"
+            className="font-mono text-xs flex-1"
+          />
+        </div>
+        <p className="text-[10px] text-[var(--text-secondary)] opacity-70">
+          Name & email used as the git author/committer when agents commit and push in this repo.
+          Defaults to <code className="font-mono">Conduit &lt;conduit@dovetail.com&gt;</code> if blank.
+        </p>
       </div>
 
       {/* Auth Method */}

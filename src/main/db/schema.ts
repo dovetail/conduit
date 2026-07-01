@@ -132,6 +132,8 @@ export const repositories = pgTable('repositories', {
   ownerId: text('owner_id'),
   githubAppId: text('github_app_id'),
   githubPrivateKeyEnc: text('github_private_key_enc'),
+  commitAuthorName: text('commit_author_name'),
+  commitAuthorEmail: text('commit_author_email'),
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
 })

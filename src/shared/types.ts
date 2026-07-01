@@ -254,6 +254,10 @@ export interface Repository {
    * the key itself is never returned to the client (write-only).
    */
   hasGithubKey?: boolean
+  /** Git author/committer name for agent commits in this repo's worktrees. */
+  commitAuthorName?: string
+  /** Git author/committer email for agent commits in this repo's worktrees. */
+  commitAuthorEmail?: string
   createdAt: number
   updatedAt: number
 }

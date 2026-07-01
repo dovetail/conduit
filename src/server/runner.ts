@@ -10,7 +10,8 @@ import { createWorkspace, deleteWorkspace } from '../main/execution/workspace'
 import { writeMcpConfig, deleteMcpConfig } from '../main/utils/mcp'
 import { DEV_USER_ID } from './auth/config'
 import { LOGS_DIR } from '../main/utils/paths'
-import { createWorktree, removeWorktree } from './gitOps'
+import { createWorktree, removeWorktree, configureWorktreeGit } from './gitOps'
+import { resolveRepoToken } from './githubApp'
 import { buildClaudeArgs, parseClaudeOutput } from '../main/execution/adapters/claude'
 import { buildAmpArgs, parseAmpOutput } from '../main/execution/adapters/amp'
 import { buildCursorArgs, CURSOR_NOTICE } from '../main/execution/adapters/cursor'
@@ -83,6 +84,16 @@ export async function startRunServer(
     const tempRunId = crypto.randomUUID()
     const worktreeDir = path.join(repo.clonePath!, 'worktrees-run', tempRunId)
     await createWorktree(repo.clonePath!, worktreeDir, repo.defaultBranch)
+    // Configure committer identity + push credentials so the agent can commit and
+    // push (and open PRs). Uses the repo's "commit as" settings, falling back to a
+    // Conduit identity, and a freshly-resolved token so origin authenticates.
+    const pushToken = await resolveRepoToken(repo).catch(() => undefined)
+    await configureWorktreeGit(worktreeDir, {
+      url: repo.url,
+      token: pushToken,
+      authorName: repo.commitAuthorName?.trim() || 'Conduit',
+      authorEmail: repo.commitAuthorEmail?.trim() || 'conduit@dovetail.com',
+    })
     workspacePath = worktreeDir
     worktreeClonePath = repo.clonePath!
     isEphemeral = false

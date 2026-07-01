@@ -221,6 +221,8 @@ export async function initDb(): Promise<void> {
       owner_id TEXT,
       github_app_id TEXT,
       github_private_key_enc TEXT,
+      commit_author_name TEXT,
+      commit_author_email TEXT,
       created_at BIGINT NOT NULL,
       updated_at BIGINT NOT NULL
     );
@@ -234,6 +236,8 @@ export async function initDb(): Promise<void> {
     ALTER TABLE repositories ADD COLUMN IF NOT EXISTS owner_id TEXT;
     ALTER TABLE repositories ADD COLUMN IF NOT EXISTS github_app_id TEXT;
     ALTER TABLE repositories ADD COLUMN IF NOT EXISTS github_private_key_enc TEXT;
+    ALTER TABLE repositories ADD COLUMN IF NOT EXISTS commit_author_name TEXT;
+    ALTER TABLE repositories ADD COLUMN IF NOT EXISTS commit_author_email TEXT;
     ALTER TABLE runs ADD COLUMN IF NOT EXISTS started_by TEXT;
     ALTER TABLE oauth_tokens ADD COLUMN IF NOT EXISTS token_owner TEXT NOT NULL DEFAULT '__global__';
     ALTER TABLE oauth_tokens ADD COLUMN IF NOT EXISTS connected_by_user_id TEXT;

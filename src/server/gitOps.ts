@@ -99,6 +99,25 @@ export async function createWorktree(
 }
 
 /**
+ * Configure a run worktree so the agent can commit and push:
+ * - sets the committer identity (author name/email)
+ * - points `origin` at a tokenized URL so `git push` authenticates
+ *
+ * `token` should be a freshly-resolved repo credential; for SSH/none repos pass
+ * no token and the existing origin (SSH or plain) is left untouched.
+ */
+export async function configureWorktreeGit(
+  worktreePath: string,
+  opts: { url: string; token?: string; authorName: string; authorEmail: string }
+): Promise<void> {
+  await runGit(['config', 'user.name', opts.authorName], { cwd: worktreePath })
+  await runGit(['config', 'user.email', opts.authorEmail], { cwd: worktreePath })
+  if (opts.token && opts.url.startsWith('https://')) {
+    await runGit(['remote', 'set-url', 'origin', buildAuthUrl(opts.url, opts.token)], { cwd: worktreePath })
+  }
+}
+
+/**
  * Remove a git worktree. Falls back to fs.rmSync if git command fails.
  */
 export async function removeWorktree(clonePath: string, worktreePath: string): Promise<void> {
