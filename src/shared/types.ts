@@ -113,6 +113,11 @@ export interface McpOAuthStatus {
   expiresAt?: number
 }
 
+export interface McpOAuthProbeResult {
+  supportsOAuth: boolean   // discovery found authorization + token endpoints
+  supportsDcr: boolean     // registration_endpoint present (Dynamic Client Registration)
+}
+
 export interface McpServersConfig {
   mcpServers: Record<string, McpServerEntry>
 }
@@ -433,6 +438,7 @@ export interface ConduitAPI {
     getStatus: (serverId: string, isGlobal: boolean) => Promise<McpOAuthStatus>
     startAuth: (serverId: string, isGlobal: boolean) => Promise<{ authUrl: string }>
     revoke: (serverId: string, isGlobal: boolean) => Promise<void>
+    probe: (serverConfig: McpServerEntry) => Promise<McpOAuthProbeResult>
   }
   onMcpOAuthComplete: (
     cb: (payload: { serverUrl: string; success: boolean; error?: string }) => void

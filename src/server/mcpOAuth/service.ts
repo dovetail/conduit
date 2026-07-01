@@ -1,10 +1,10 @@
 import * as crypto from 'crypto'
-import type { McpOAuthConfig, McpOAuthStatus, McpServerEntry } from '../../shared/types'
+import type { McpOAuthConfig, McpOAuthProbeResult, McpOAuthStatus, McpServerEntry } from '../../shared/types'
 import { getGlobalMcp } from '../../main/db/queries/globalMcps'
 import { getAgent } from '../../main/db/queries/agents'
 import { canAccessEntity, isEntityOwner } from '../../main/db/queries/access'
 import { getTokenStatus, saveToken, deleteToken, getConnectedByUserId } from '../../main/db/queries/oauthTokens'
-import { ensureRegisteredClient } from './discovery'
+import { discoverOAuthEndpoints, ensureRegisteredClient } from './discovery'
 import { generatePkce, buildAuthorizationUrl, exchangeCode } from './flow'
 import { putPending, takePending } from './state'
 
@@ -91,6 +91,18 @@ export async function revoke(serverId: string, isGlobal: boolean, userId: string
     if (!owns && connectedBy !== userId) throw new Error('Only the owner or the connecting user can revoke this token')
   }
   await deleteToken(t.serverUrl, t.tokenOwner)
+}
+
+export async function probeOAuthSupport(config: McpServerEntry): Promise<McpOAuthProbeResult> {
+  if ((config.type && config.type !== 'url') || !config.url) {
+    return { supportsOAuth: false, supportsDcr: false }
+  }
+  try {
+    const meta = await discoverOAuthEndpoints(config.url)
+    return { supportsOAuth: true, supportsDcr: !!meta.registration_endpoint }
+  } catch {
+    return { supportsOAuth: false, supportsDcr: false }
+  }
 }
 
 /** Handle the OAuth redirect. Pure enough to unit test; the route wraps it. */
