@@ -70,6 +70,7 @@ import { getShare, listShares, createShare, deleteShare } from '../main/db/queri
 import { listUsers, searchUsers } from '../main/db/queries/users'
 import { listGroups, getUserGroupIds } from '../main/db/queries/groups'
 import { getSession as getDbSession, deleteExpiredSessions } from '../main/db/queries/sessions'
+import { ensureLocalSecretKey } from './localSecret'
 import type {
   AgentConfig,
   GlobalMcpServer,
@@ -82,6 +83,9 @@ import type {
   RequestContext,
   ShareableEntityType,
 } from '../shared/types'
+
+// Ensure a local encryption key exists for dev before anything touches crypto/DB.
+ensureLocalSecretKey()
 
 const PORT = process.env.PORT || 7456
 
