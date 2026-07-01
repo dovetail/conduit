@@ -58,7 +58,8 @@ Conduit supports multi-user authentication via Okta OIDC. When Okta is not confi
 | `CONDUIT_SESSION_SECRET` | Secret for signing session cookies |
 | `CONDUIT_SESSION_TTL_MS` | Session lifetime in ms (default: 86400000 / 24h) |
 | `CONDUIT_OKTA_API_TOKEN` | Okta API token for user search (optional — enables sharing with users who haven't logged in yet) |
-| `CONDUIT_SECRET_KEY` | Symmetric key for encrypting repository GitHub App private keys at rest. Hex-encoded, must decode to exactly 32 bytes (64 hex chars). Generate with `openssl rand -hex 32`. **Required** whenever any repository uses GitHub App auth — encryption/decryption throws loudly if it's missing or the wrong length (no silent fallback). **No rotation:** changing it after PEMs are stored makes all existing encrypted keys undecryptable; each affected repo must re-upload its key. |
+| `CONDUIT_SECRET_KEY` | Symmetric key for encrypting secrets (GitHub App private keys, MCP OAuth tokens) at rest. Hex-encoded, must decode to exactly 32 bytes (64 hex chars). Generate with `openssl rand -hex 32`. **Local dev:** if unset, a key is auto-generated and persisted to `~/.conduit/.conduit.key`; **production must set this explicitly** — no auto-gen, no silent rotation. **No rotation:** changing it after secrets are stored makes all existing encrypted data undecryptable. |
+| `CONDUIT_BASE_URL` | Base URL of the Conduit server (default: `http://localhost:7456`). Used to build the MCP OAuth redirect URI `${CONDUIT_BASE_URL}/mcp/oauth/callback`. Set this in production to your public hostname. |
 
 **Auth flow**: OIDC Authorization Code + PKCE. Sessions stored in SQLite. Groups synced from Okta ID token `groups` claim on each login.
 
@@ -74,6 +75,34 @@ Conduit supports multi-user authentication via Okta OIDC. When Okta is not confi
 - `src/server/auth/middleware.ts` — session validation middleware
 - `src/server/auth/devBypass.ts` — dev mode synthetic user
 - `src/server/auth/routes.ts` — Express auth router
+
+## MCP OAuth
+
+MCP servers that require OAuth use **server-mode OAuth 2.0 + PKCE** — Conduit holds the tokens on behalf of users so agents can authenticate to upstream APIs without manual token handling.
+
+**Discovery & registration**: Conduit attempts RFC 7591 Dynamic Client Registration (DCR) via the server's `/.well-known/oauth-authorization-server` or `/.well-known/openid-configuration` metadata document. If the server does not support DCR, fall back to a manually configured `clientId` stored in `mcp_oauth_clients`.
+
+**Token ownership**:
+- Per-agent MCPs: tokens are scoped to the acting user (`tokenOwner = userId`).
+- Global MCPs: tokens are shared under `tokenOwner = '__global__'`. The UI shows which user first connected ("Connected by …") so operators know whose credential is in use.
+
+**Encryption**: access tokens, refresh tokens, and DCR client secrets are all encrypted at rest using `CONDUIT_SECRET_KEY` via `src/server/crypto.ts` (AES-256-GCM). Local dev auto-generates and persists the key to `~/.conduit/.conduit.key`; production must set `CONDUIT_SECRET_KEY` explicitly.
+
+**HTTP route** (mounted *before* session middleware, so the browser redirect always lands):
+- `GET /mcp/oauth/callback` — receives the authorization code, exchanges it for tokens, stores them, and closes the popup.
+
+**WebSocket channels** (`mcp:oauth:*`):
+- `mcp:oauth:startAuth` — initiates the flow; returns a URL to open in a popup.
+- `mcp:oauth:getStatus` — returns the current `McpOAuthStatus` (none | pending | connected | error) for a given server URL + token owner.
+- `mcp:oauth:revoke` — deletes stored tokens for a given server URL + token owner.
+
+**Run-time injection**: `writeMcpConfig` (called when launching an agent run) reads the stored access token and injects an `Authorization: Bearer <token>` header into the MCP server configuration. Tokens are auto-refreshed before injection when a refresh token is available.
+
+**Files**:
+- `src/server/crypto.ts` — `encryptSecret` / `decryptSecret` (AES-256-GCM)
+- `src/server/mcp/oauth/` — DCR, discovery, PKCE exchange, token store, callback handler
+- `src/main/db/queries/mcpOAuth.ts` — `getToken`, `saveToken`, `deleteToken`
+- `src/renderer/hooks/useMcpOAuth.ts` — TanStack Query hooks for OAuth status + mutations
 
 ## Ownership & Sharing
 
@@ -109,7 +138,7 @@ Managed repositories authenticate to GitHub via one of four methods (`authMethod
 - `ssh` — SSH key (handled outside HTTPS token injection)
 - `githubapp` — per-repo GitHub App (App ID + private key PEM)
 
-**GitHub App auth**: two columns on the `repositories` table — `github_app_id` (TEXT, the App ID, not secret) and `github_private_key_enc` (TEXT, the PEM **encrypted** at rest). The PEM is encrypted with **AES-256-GCM** via `src/server/crypto.ts`; the key comes from `CONDUIT_SECRET_KEY` (see auth table above).
+**GitHub App auth**: two columns on the `repositories` table — `github_app_id` (TEXT, the App ID, not secret) and `github_private_key_enc` (TEXT, the PEM **encrypted** at rest). The PEM is encrypted with **AES-256-GCM** via `src/server/crypto.ts`; the key comes from `CONDUIT_SECRET_KEY` (see env-var table above).
 
 The PEM is **write-only** from the client: it's sent on create/update and never returned. The API exposes only `githubAppId` and `hasGithubKey: boolean` (see `rowToRepository` in `src/main/db/queries/repositories.ts`; raw credentials are read server-side via `getRepositoryCredentials`).
 
