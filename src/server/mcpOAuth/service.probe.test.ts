@@ -8,7 +8,10 @@ vi.mock('./discovery', () => ({
 import { probeOAuthSupport } from './service'
 import { discoverOAuthEndpoints } from './discovery'
 
-afterEach(() => vi.clearAllMocks())
+afterEach(() => {
+  vi.clearAllMocks()
+  vi.unstubAllGlobals()
+})
 
 describe('probeOAuthSupport', () => {
   it('url-type + discovery returns registration_endpoint -> supportsOAuth:true, supportsDcr:true', async () => {
@@ -33,6 +36,7 @@ describe('probeOAuthSupport', () => {
 
   it('discovery throws -> supportsOAuth:false, supportsDcr:false', async () => {
     vi.mocked(discoverOAuthEndpoints).mockRejectedValueOnce(new Error('Network error'))
+    vi.stubGlobal('fetch', vi.fn(async () => ({ status: 500, ok: false })))
     const result = await probeOAuthSupport({ type: 'url', url: 'https://mcp.example.com' })
     expect(result).toEqual({ supportsOAuth: false, supportsDcr: false })
   })
