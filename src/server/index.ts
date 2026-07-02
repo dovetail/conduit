@@ -137,10 +137,21 @@ app.use('/auth', authRoutes)
 // provider's redirect arrives without requiring a Conduit session cookie.
 app.use('/mcp/oauth', createMcpOAuthRouter(broadcast))
 
-// Session middleware — validates session cookie, attaches RequestContext to req
-app.use(sessionMiddleware)
-
+// Serve the SPA shell + static assets WITHOUT requiring a session, so an
+// unauthenticated browser can load the app and drive the Okta/OIDC login flow.
+// (Data access is authenticated separately at the WebSocket upgrade, and /auth/me
+// self-gates; the /api/* routes below stay behind sessionMiddleware.) Without
+// this, unauthenticated requests to '/' returned 401 JSON and the app never
+// loaded — showing a raw "Not authenticated" instead of the login page.
 app.use(express.static(RENDERER_DIR))
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api/')) return next()
+  res.sendFile(path.join(RENDERER_DIR, 'index.html'))
+})
+
+// Session middleware — validates session cookie, attaches RequestContext to req.
+// Guards the HTTP API routes registered after it.
+app.use(sessionMiddleware)
 
 // ─── Active clients ───────────────────────────────────────────────────────────
 
@@ -161,11 +172,6 @@ const triggerService = new TriggerService(broadcast)
 
 // Inbound trigger HTTP endpoints. Registered before SPA catch-all but after triggerService.
 app.use('/api/triggers', express.json({ limit: '1mb' }), createTriggerRoutes(triggerService))
-
-// SPA fallback — all other GETs serve index.html
-app.get('*', (_req, res) => {
-  res.sendFile(path.join(RENDERER_DIR, 'index.html'))
-})
 
 // ─── Channel handlers ─────────────────────────────────────────────────────────
 
