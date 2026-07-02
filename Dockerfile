@@ -29,13 +29,32 @@ FROM node:22-slim
 
 WORKDIR /app
 
-# git is required at runtime for repository sync (clone/fetch/worktree).
+# git is required at runtime for repository sync (clone/fetch/worktree); curl
+# is needed to fetch the Cursor CLI installer below.
 # No PID-1 wrapper (tini/dumb-init): Node 22 receives signals correctly when
 # used as PID 1 with an exec-form ENTRYPOINT, and the server installs its
 # own SIGTERM/SIGINT handlers for graceful shutdown.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends git ca-certificates && \
+    apt-get install -y --no-install-recommends git ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
+
+# Agent CLIs the runner shells out to. Without these the deployed host reports
+# every runner as "not installed" on the agent select screen and runs fail.
+#   - claude       → @anthropic-ai/claude-code (npm, bin: claude)
+#   - amp          → @sourcegraph/amp          (npm, bin: amp)
+#   - cursor-agent → cursor.com/install script (not on npm)
+# npm globals land in /usr/local/bin (on PATH for every user, incl. `node`).
+RUN npm install -g @anthropic-ai/claude-code @sourcegraph/amp && \
+    npm cache clean --force
+
+# Cursor's installer drops a versioned build + a `cursor-agent` launcher under
+# $HOME/.local. Install it under a shared, world-readable HOME (not /root,
+# which is mode 700 and unreadable by `node`) and symlink the launcher onto PATH.
+ENV CURSOR_HOME=/opt/cursor
+RUN mkdir -p "$CURSOR_HOME" && \
+    HOME="$CURSOR_HOME" curl -fsS https://cursor.com/install | bash && \
+    ln -sf "$CURSOR_HOME/.local/bin/cursor-agent" /usr/local/bin/cursor-agent && \
+    chmod -R a+rX "$CURSOR_HOME"
 
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
