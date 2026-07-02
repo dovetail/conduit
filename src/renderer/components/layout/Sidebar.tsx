@@ -1,5 +1,5 @@
 import React from 'react'
-import { Plus, Sun, Moon, Monitor, Server, Send, FolderGit2 } from 'lucide-react'
+import { Plus, Sun, Moon, Monitor, Server, Send, FolderGit2, Settings } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { AgentList } from '@renderer/components/agents/AgentList'
 import { UserMenu } from '@renderer/components/UserMenu'
@@ -11,7 +11,7 @@ import { useRepositories } from '@renderer/hooks/useRepositories'
 import { cn } from '@renderer/lib/utils'
 
 export function Sidebar() {
-  const { theme, setTheme, selectAgent, showGlobalMcpManager, setShowGlobalMcpManager, showPublishTargets, setShowPublishTargets, showRepositories, setShowRepositories } = useUIStore()
+  const { theme, setTheme, selectAgent, showGlobalMcpManager, setShowGlobalMcpManager, showPublishTargets, setShowPublishTargets, showRepositories, setShowRepositories, showSettings, setShowSettings } = useUIStore()
   const createAgent = useCreateAgent()
   const { data: globalMcps = [] } = useGlobalMcps()
   const { data: publishTargets = [] } = usePublishTargets()
@@ -158,6 +158,18 @@ export function Sidebar() {
               {enabledPublishCount}
             </span>
           )}
+        </button>
+        <button
+          onClick={() => setShowSettings(true)}
+          className={cn(
+            'w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-xs font-medium transition-colors',
+            showSettings
+              ? 'bg-[var(--accent)]/15 text-[var(--accent)]'
+              : 'text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]'
+          )}
+        >
+          <Settings className="h-3.5 w-3.5 flex-shrink-0" />
+          <span className="flex-1 text-left">Settings</span>
         </button>
       </div>
     </div>

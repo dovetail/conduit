@@ -13,6 +13,17 @@ export interface RunnerCliStatus {
   path?: string
 }
 
+/**
+ * Whether the acting user has an API key/token stored for each runner. Never
+ * carries the secret itself — only whether one is configured. Injected into the
+ * runner process as ANTHROPIC_API_KEY / AMP_API_KEY / CURSOR_API_KEY at launch.
+ */
+export interface AgentCredentialStatus {
+  claude: boolean
+  amp: boolean
+  cursor: boolean
+}
+
 // ── Auth & Users ───────────────────────────────────────────────────────────
 
 export interface User {
@@ -452,6 +463,12 @@ export interface ConduitAPI {
   runners: {
     /** Report which runner CLIs are installed and on the server's PATH. */
     checkCli: () => Promise<RunnerCliStatus[]>
+  }
+  agentCredentials: {
+    /** Whether the acting user has a credential stored for each runner. */
+    getStatus: () => Promise<AgentCredentialStatus>
+    /** Store (or, with an empty string, clear) the acting user's credential for a runner. */
+    set: (runner: RunnerType, value: string) => Promise<void>
   }
   repos: {
     list: () => Promise<Repository[]>

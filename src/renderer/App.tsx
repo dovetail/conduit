@@ -5,6 +5,7 @@ import { MainPanel } from './components/layout/MainPanel'
 import { GlobalMcpManager } from './components/settings/GlobalMcpManager'
 import { PublishTargetManager } from './components/settings/PublishTargetManager'
 import { RepositoryManager } from './components/settings/RepositoryManager'
+import { SettingsManager } from './components/settings/SettingsManager'
 import { LoginPage } from './components/LoginPage'
 import { useAuth } from './contexts/AuthContext'
 import { useUIStore } from './store/ui'
@@ -64,7 +65,7 @@ function EmptyState() {
 
 export default function App() {
   const { isAuthenticated } = useAuth()
-  const { selectedAgentId, selectAgent, showGlobalMcpManager, showPublishTargets, showRepositories } = useUIStore()
+  const { selectedAgentId, selectAgent, showGlobalMcpManager, showPublishTargets, showRepositories, showSettings } = useUIStore()
   const createAgent = useCreateAgent()
 
   const handleNewAgent = useCallback(async () => {
@@ -128,7 +129,9 @@ export default function App() {
         {/* Main content */}
         <Panel defaultSize={78} minSize={40}>
           <div className="h-full">
-            {showRepositories ? (
+            {showSettings ? (
+              <SettingsManager />
+            ) : showRepositories ? (
               <RepositoryManager />
             ) : showGlobalMcpManager ? (
               <GlobalMcpManager />

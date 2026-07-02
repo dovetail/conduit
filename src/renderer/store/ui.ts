@@ -12,6 +12,7 @@ interface UIState {
   showGlobalMcpManager: boolean
   showPublishTargets: boolean
   showRepositories: boolean
+  showSettings: boolean
   // Actions
   selectAgent: (id: string | null) => void
   setActiveRun: (id: string | null) => void
@@ -21,6 +22,7 @@ interface UIState {
   setShowGlobalMcpManager: (show: boolean) => void
   setShowPublishTargets: (show: boolean) => void
   setShowRepositories: (show: boolean) => void
+  setShowSettings: (show: boolean) => void
 }
 
 function applyTheme(theme: Theme) {
@@ -79,20 +81,22 @@ interface UrlState {
   globalMcps: boolean
   publishTargets: boolean
   repositories: boolean
+  settings: boolean
 }
 
 function readUrlState(): UrlState {
-  const empty: UrlState = { agentId: null, runId: null, globalMcps: false, publishTargets: false, repositories: false }
+  const empty: UrlState = { agentId: null, runId: null, globalMcps: false, publishTargets: false, repositories: false, settings: false }
   if (typeof window === 'undefined') return empty
   const path = window.location.pathname
   const globalMcps = path === '/global-mcps'
   const publishTargets = path === '/publish-targets'
   const repositories = path === '/repositories'
+  const settings = path === '/settings'
   // /agents/:agentId/runs/:runId (deep link to a run) or /agents/:agentId
   const runMatch = path.match(/^\/agents\/([^/]+)\/runs\/([^/]+)$/)
   if (runMatch) return { ...empty, agentId: runMatch[1], runId: runMatch[2] }
   const agentMatch = path.match(/^\/agents\/([^/]+)$/)
-  return { ...empty, agentId: agentMatch ? agentMatch[1] : null, globalMcps, publishTargets, repositories }
+  return { ...empty, agentId: agentMatch ? agentMatch[1] : null, globalMcps, publishTargets, repositories, settings }
 }
 
 function pushUrl(path: string) {
@@ -112,10 +116,11 @@ export const useUIStore = create<UIState>((set, get) => ({
   showGlobalMcpManager: initialUrl.globalMcps,
   showPublishTargets: initialUrl.publishTargets,
   showRepositories: initialUrl.repositories,
+  showSettings: initialUrl.settings,
 
   selectAgent: (id) => {
     pushUrl(id ? `/agents/${id}` : '/')
-    set({ selectedAgentId: id, viewedRunId: null, showGlobalMcpManager: false, showPublishTargets: false, showRepositories: false })
+    set({ selectedAgentId: id, viewedRunId: null, showGlobalMcpManager: false, showPublishTargets: false, showRepositories: false, showSettings: false })
   },
 
   setViewedRun: (id) => {
@@ -137,17 +142,22 @@ export const useUIStore = create<UIState>((set, get) => ({
 
   setShowGlobalMcpManager: (show) => {
     pushUrl(show ? '/global-mcps' : '/')
-    set({ showGlobalMcpManager: show, showPublishTargets: false, showRepositories: false })
+    set({ showGlobalMcpManager: show, showPublishTargets: false, showRepositories: false, showSettings: false })
   },
 
   setShowPublishTargets: (show) => {
     pushUrl(show ? '/publish-targets' : '/')
-    set({ showPublishTargets: show, showGlobalMcpManager: false, showRepositories: false })
+    set({ showPublishTargets: show, showGlobalMcpManager: false, showRepositories: false, showSettings: false })
   },
 
   setShowRepositories: (show) => {
     pushUrl(show ? '/repositories' : '/')
-    set({ showRepositories: show, showGlobalMcpManager: false, showPublishTargets: false })
+    set({ showRepositories: show, showGlobalMcpManager: false, showPublishTargets: false, showSettings: false })
+  },
+
+  setShowSettings: (show) => {
+    pushUrl(show ? '/settings' : '/')
+    set({ showSettings: show, showGlobalMcpManager: false, showPublishTargets: false, showRepositories: false })
   },
 
   setTheme: (theme) => {
@@ -182,6 +192,7 @@ if (typeof window !== 'undefined') {
       showGlobalMcpManager: s.globalMcps,
       showPublishTargets: s.publishTargets,
       showRepositories: s.repositories,
+      showSettings: s.settings,
     })
   })
 }

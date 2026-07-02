@@ -149,6 +149,28 @@ The PEM is **write-only** from the client: it's sent on create/update and never 
 - `src/server/crypto.ts` — `encryptSecret` / `decryptSecret` (AES-256-GCM, `iv:authTag:ciphertext` base64)
 - `src/server/githubApp.ts` — `resolveRepoToken`, `mintInstallationToken`, `parseGithubOwnerRepo`
 
+## Agent Credentials
+
+The **Settings** screen (left nav → Settings, route `/settings`) lets each user store
+API keys/tokens for the agent CLIs. Keys are **per-user**, encrypted at rest with
+`CONDUIT_SECRET_KEY` (`src/server/crypto.ts`), and injected into the runner process
+environment at launch.
+
+- Table `agent_credentials` — PK `(user_id, runner)`, column `value_enc` (encrypted).
+- Runner → env var mapping: `claude → ANTHROPIC_API_KEY`, `amp → AMP_API_KEY`,
+  `cursor → CURSOR_API_KEY` (`RUNNER_ENV_VAR` in `src/server/runner.ts`).
+- Injection (`buildRunnerEnv` in `src/server/runner.ts`): resolves the run's acting user
+  (`startedBy`, else the agent owner), decrypts their stored key, and sets the env var —
+  but an explicit per-agent `envVars` entry always wins, and a missing key falls back to
+  the host environment.
+- Status is **write-only** from the client: the API exposes only whether a key is
+  configured (`AgentCredentialStatus`), never the secret.
+
+**Files**: `src/main/db/queries/agentCredentials.ts` (get/set/getValue),
+`agentCreds:getStatus` / `agentCreds:set` handlers in `src/server/index.ts`,
+`src/renderer/components/settings/SettingsManager.tsx`,
+`src/renderer/hooks/useAgentCredentials.ts`.
+
 ## Data Storage
 
 All data lives under `~/.conduit/` (or `$CONDUIT_DATA_DIR`):

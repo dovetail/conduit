@@ -6,6 +6,7 @@ import type { ExecutionRun, LogEntry, TriggerContext } from '../shared/types'
 import { createRun, updateRun } from '../main/db/queries/runs'
 import { getAgent } from '../main/db/queries/agents'
 import { getRepository } from '../main/db/queries/repositories'
+import { getCredentialValue } from '../main/db/queries/agentCredentials'
 import { createWorkspace, deleteWorkspace } from '../main/execution/workspace'
 import { writeMcpConfig, deleteMcpConfig } from '../main/utils/mcp'
 import { DEV_USER_ID } from './auth/config'
@@ -20,6 +21,37 @@ import { buildTriggeredPrompt } from './triggers/promptBuilder'
 
 /** Function signature for broadcasting events to all connected WebSocket clients */
 export type BroadcastFn = (channel: string, payload: unknown) => void
+
+/** Environment variable each runner reads its API key/token from. */
+const RUNNER_ENV_VAR: Record<string, string> = {
+  claude: 'ANTHROPIC_API_KEY',
+  amp: 'AMP_API_KEY',
+  cursor: 'CURSOR_API_KEY',
+}
+
+/**
+ * Build the child-process environment for a run: the host env, overlaid with
+ * the agent's explicit envVars, then the acting user's stored runner credential
+ * (Settings screen) injected as the runner's API-key env var. An explicit
+ * per-agent envVar always wins over the stored credential.
+ */
+async function buildRunnerEnv(
+  agent: { runner: string; envVars?: Record<string, string>; ownerId?: string },
+  startedBy?: string
+): Promise<NodeJS.ProcessEnv> {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...(agent.envVars ?? {}) }
+  const envVar = RUNNER_ENV_VAR[agent.runner]
+  if (envVar && !(agent.envVars && envVar in agent.envVars)) {
+    const ownerId = startedBy || agent.ownerId || DEV_USER_ID
+    try {
+      const cred = await getCredentialValue(ownerId, agent.runner as 'claude' | 'amp' | 'cursor')
+      if (cred) env[envVar] = cred
+    } catch (err) {
+      console.error(`[server/runner] Failed to load ${agent.runner} credential for ${ownerId}:`, err)
+    }
+  }
+  return env
+}
 
 interface ActiveRun {
   child: ChildProcess
@@ -280,6 +312,7 @@ export async function startRunServer(
       child = spawn('cursor', buildCursorArgs(workspacePath), {
         detached: true,
         stdio: 'ignore',
+        env: await buildRunnerEnv(agent, startedBy),
       })
       child.unref()
     } catch (err) {
@@ -319,7 +352,7 @@ export async function startRunServer(
 
     child = spawn(binary, cliArgs, {
       cwd: workspacePath,
-      env: { ...process.env, ...agent.envVars },
+      env: await buildRunnerEnv(agent, startedBy),
       stdio: ['pipe', 'pipe', 'pipe'],
     })
 

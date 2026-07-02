@@ -254,6 +254,14 @@ export async function initDb(): Promise<void> {
       created_at BIGINT NOT NULL,
       updated_at BIGINT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS agent_credentials (
+      user_id TEXT NOT NULL,
+      runner TEXT NOT NULL,
+      value_enc TEXT NOT NULL,
+      updated_at BIGINT NOT NULL,
+      PRIMARY KEY (user_id, runner)
+    );
   `)
 
   // Guarded primary-key swap for oauth_tokens: drop the old single-column PK

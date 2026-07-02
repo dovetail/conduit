@@ -73,6 +73,7 @@ import { canAccessEntity, isEntityOwner } from '../main/db/queries/access'
 import { getShare, listShares, createShare, deleteShare } from '../main/db/queries/shares'
 import { listUsers, searchUsers } from '../main/db/queries/users'
 import { listGroups, getUserGroupIds } from '../main/db/queries/groups'
+import { getCredentialStatus, setCredential } from '../main/db/queries/agentCredentials'
 import { getSession as getDbSession, deleteExpiredSessions } from '../main/db/queries/sessions'
 import { ensureLocalSecretKey } from './localSecret'
 import type {
@@ -561,6 +562,12 @@ const handlers: Record<string, HandlerFn> = {
       'prefs:set is disabled in server mode — configure secrets via environment variables (e.g. via ESO + AWS Secrets Manager).'
     )
   },
+
+  // Agent credentials — per-user API keys/tokens for the runner CLIs, encrypted
+  // at rest and injected into the runner process env at launch.
+  'agentCreds:getStatus': (_args, _ws, ctx) => getCredentialStatus(ctx.userId),
+  'agentCreds:set': ([runner, value], _ws, ctx) =>
+    setCredential(ctx.userId, runner as RunnerType, (value as string) ?? '').then(() => undefined),
 
   'shell:openExternal': ([url]) => Promise.resolve({ url }),
 

@@ -35,6 +35,9 @@ export const api = {
   get runners() {
     return getConduit().runners
   },
+  get agentCredentials() {
+    return getConduit().agentCredentials
+  },
   onRepoSyncStatus: (cb: (payload: RepoSyncStatusPayload) => void): (() => void) => {
     return getConduit().onRepoSyncStatus(cb)
   },

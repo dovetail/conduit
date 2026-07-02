@@ -79,6 +79,17 @@ export const mcpOAuthClients = pgTable('mcp_oauth_clients', {
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
 })
 
+// Per-user API keys/tokens for the agent CLIs (claude/amp/cursor), encrypted at
+// rest. Injected into the runner process env at launch. One row per (user, runner).
+export const agentCredentials = pgTable('agent_credentials', {
+  userId: text('user_id').notNull(),
+  runner: text('runner').notNull(),
+  valueEnc: text('value_enc').notNull(),
+  updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
+}, (table) => ({
+  pk: primaryKey({ columns: [table.userId, table.runner] }),
+}))
+
 export const agents = pgTable('agents', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
