@@ -60,7 +60,11 @@ export function ShareDialog({ entityType, entityId, isOpen, onClose }: ShareDial
   }, [shares])
 
   const filteredSearchResults = searchResults.filter((u) => !sharedTargetIds.has(u.id))
-  const filteredGroups = groups.filter((g) => !sharedTargetIds.has(g.id))
+  // Filter groups by the same search box (type-ahead) so large group lists stay usable.
+  const groupQuery = searchQuery.trim().toLowerCase()
+  const filteredGroups = groups.filter(
+    (g) => !sharedTargetIds.has(g.id) && (groupQuery === '' || g.name.toLowerCase().includes(groupQuery))
+  )
 
   function getShareTargetName(share: Share): string {
     if (share.targetType === 'everyone') return 'Everyone'
@@ -164,7 +168,7 @@ export function ShareDialog({ entityType, entityId, isOpen, onClose }: ShareDial
           {/* Search results dropdown */}
           {searchQuery.length >= 2 && filteredSearchResults.length > 0 && (
             <div
-              className="rounded-lg border border-[var(--border)] overflow-hidden"
+              className="rounded-lg border border-[var(--border)] overflow-y-auto max-h-56"
               style={{ background: 'var(--bg-primary)' }}
             >
               {filteredSearchResults.map((user) => (
@@ -212,10 +216,10 @@ export function ShareDialog({ entityType, entityId, isOpen, onClose }: ShareDial
         {filteredGroups.length > 0 && (
           <div className="space-y-2">
             <label className="block text-xs font-medium text-[var(--text-secondary)]">
-              Groups
+              Groups {searchQuery.trim() && <span className="opacity-60">({filteredGroups.length})</span>}
             </label>
             <div
-              className="rounded-lg border border-[var(--border)] overflow-hidden"
+              className="rounded-lg border border-[var(--border)] overflow-y-auto max-h-56"
               style={{ background: 'var(--bg-primary)' }}
             >
               {filteredGroups.map((group) => (
