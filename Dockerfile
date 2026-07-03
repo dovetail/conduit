@@ -47,14 +47,26 @@ RUN apt-get update && \
 RUN npm install -g @anthropic-ai/claude-code @sourcegraph/amp && \
     npm cache clean --force
 
-# Cursor's installer drops a versioned build + a `cursor-agent` launcher under
-# $HOME/.local. Install it under a shared, world-readable HOME (not /root,
-# which is mode 700 and unreadable by `node`) and symlink the launcher onto PATH.
+# Cursor's installer chooses its install dir purely from $HOME: it drops a
+# versioned build under $HOME/.local/share/cursor-agent and a `cursor-agent`
+# launcher into $HOME/.local/bin. Point $HOME at a shared, world-readable dir
+# (not /root, which is mode 700 and unreadable by `node`), then symlink the
+# launcher onto PATH.
+#
+# The env assignment MUST sit on `bash`, not `curl`: in a pipeline
+# `VAR=v curl ... | bash` the prefix binds only to `curl`, so the installer
+# (bash) would inherit the build's HOME=/root and write there instead — leaving
+# the symlink below dangling and `which cursor-agent` (the runtime install
+# check) failing on the deployed host.
 ENV CURSOR_HOME=/opt/cursor
 RUN mkdir -p "$CURSOR_HOME" && \
-    HOME="$CURSOR_HOME" curl -fsS https://cursor.com/install | bash && \
+    curl -fsS https://cursor.com/install | HOME="$CURSOR_HOME" bash && \
     ln -sf "$CURSOR_HOME/.local/bin/cursor-agent" /usr/local/bin/cursor-agent && \
-    chmod -R a+rX "$CURSOR_HOME"
+    chmod -R a+rX "$CURSOR_HOME" && \
+    # Fail the build loudly if the install layout ever drifts again: -x follows
+    # the whole symlink chain and confirms the agent is actually executable,
+    # mirroring the runtime `which cursor-agent` check.
+    test -x /usr/local/bin/cursor-agent
 
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
