@@ -49,7 +49,7 @@
     "express": "^4.21.2",
     "lucide-react": "^0.468.0",
     "node-cron": "^4.2.1",
-    "nodemailer": "^8.0.5",
+    "nodemailer": "^9.0.1",
     "openid-client": "^6.8.2",
     "pg": "^8.13.1",
     "react": "^18.3.1",
