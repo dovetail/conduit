@@ -283,6 +283,36 @@ export async function initDb(): Promise<void> {
       END IF;
     END $$;
   `)
+
+  // Single-user → multi-user backfill for global MCP servers.
+  //
+  // Global MCP servers created while Conduit ran in single-user (dev-bypass)
+  // mode are owned by the synthetic 'dev-user' (or, for rows predating the
+  // owner_id column, NULL). Once Okta multi-user mode is enabled, real users
+  // neither own nor are shared these rows, so getVisibleEntityIds() hides them
+  // from listGlobalMcps(). But the global-MCP name uniqueness check scans every
+  // row regardless of visibility (global keys share a single run-time
+  // namespace), so these invisible entries silently block their own names and
+  // can no longer be seen, edited, or deleted through the UI.
+  //
+  // Promote each such single-user entry to a real multi-user *global* entry by
+  // sharing it with everyone, restoring visibility for all users. Idempotent:
+  // the NOT EXISTS guard means re-running never creates duplicate shares (the
+  // unique_share index does not dedupe 'everyone' rows because target_id is
+  // NULL and Postgres treats NULLs as distinct).
+  await pool.query(`
+    INSERT INTO shares (id, entity_type, entity_id, target_type, target_id, created_by, created_at)
+    SELECT gen_random_uuid()::text, 'globalMcpServer', g.id, 'everyone', NULL, 'dev-user',
+           (extract(epoch FROM now()) * 1000)::bigint
+    FROM global_mcp_servers g
+    WHERE (g.owner_id = 'dev-user' OR g.owner_id IS NULL)
+      AND NOT EXISTS (
+        SELECT 1 FROM shares s
+        WHERE s.entity_type = 'globalMcpServer'
+          AND s.entity_id = g.id
+          AND s.target_type = 'everyone'
+      );
+  `)
 }
 
 export async function closeDb(): Promise<void> {
