@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react'
 import type { User, Group, AuthState } from '@shared/types'
+import { reporter } from '@renderer/observability'
 
 const AuthContext = createContext<AuthState & { logout: () => Promise<void> }>({
   user: null,
@@ -37,6 +38,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setState((prev) => ({ ...prev, isLoading: false }))
       })
   }, [])
+
+  // Attach the authenticated user to the error reporter (and clear it on logout)
+  // so captured events are attributed to whoever hit them.
+  useEffect(() => {
+    if (state.user) {
+      reporter.setUser({ id: state.user.id, email: state.user.email })
+    } else {
+      reporter.setUser(null)
+    }
+  }, [state.user])
 
   const logout = async () => {
     await fetch('/auth/logout', { method: 'POST' })

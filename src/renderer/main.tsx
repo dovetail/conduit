@@ -1,8 +1,8 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import * as Sentry from '@sentry/react'
 import { AuthProvider } from './contexts/AuthContext'
+import { reporter, initObservability } from './observability'
 import App from './App'
 import './styles/globals.css'
 
@@ -10,26 +10,18 @@ interface RuntimeConfig {
   sentryDsn: string | null
   sentryEnvironment: string | null
   sentryRelease: string | null
+  errorReporters: string[]
 }
 
 async function loadRuntimeConfig(): Promise<RuntimeConfig> {
   try {
     const res = await fetch('/api/runtime-config', { credentials: 'same-origin' })
-    if (!res.ok) return { sentryDsn: null, sentryEnvironment: null, sentryRelease: null }
+    if (!res.ok)
+      return { sentryDsn: null, sentryEnvironment: null, sentryRelease: null, errorReporters: [] }
     return (await res.json()) as RuntimeConfig
   } catch {
-    return { sentryDsn: null, sentryEnvironment: null, sentryRelease: null }
+    return { sentryDsn: null, sentryEnvironment: null, sentryRelease: null, errorReporters: [] }
   }
-}
-
-function initSentry(config: RuntimeConfig): void {
-  if (!config.sentryDsn) return
-  Sentry.init({
-    dsn: config.sentryDsn,
-    environment: config.sentryEnvironment ?? undefined,
-    release: config.sentryRelease ?? undefined,
-    tracesSampleRate: 0,
-  })
 }
 
 const queryClient = new QueryClient({
@@ -72,7 +64,7 @@ class ErrorBoundary extends React.Component<
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     console.error('Conduit renderer error:', error, info)
-    Sentry.captureException(error, { extra: { componentStack: info.componentStack } })
+    reporter.captureException(error, { extra: { componentStack: info.componentStack } })
   }
 
   render() {
@@ -131,7 +123,12 @@ class ErrorBoundary extends React.Component<
 
 ;(async () => {
   const config = await loadRuntimeConfig()
-  initSentry(config)
+  initObservability({
+    errorReporters: config.errorReporters,
+    sentryDsn: config.sentryDsn,
+    sentryEnvironment: config.sentryEnvironment,
+    sentryRelease: config.sentryRelease,
+  })
 
   await bootstrapConduit()
 

@@ -18,6 +18,7 @@ import { buildAmpArgs, parseAmpOutput } from '../main/execution/adapters/amp'
 import { buildCursorArgs, CURSOR_NOTICE } from '../main/execution/adapters/cursor'
 import { publishRunResult } from './publisher'
 import { buildTriggeredPrompt } from './triggers/promptBuilder'
+import { reporter } from './observability'
 
 /** Function signature for broadcasting events to all connected WebSocket clients */
 export type BroadcastFn = (channel: string, payload: unknown) => void
@@ -316,6 +317,8 @@ export async function startRunServer(
       })
       child.unref()
     } catch (err) {
+      // Rethrown to the caller (WS 'runs:start' handler / triggerService), which
+      // reports it — capturing here too would double-report.
       cleanupRun(runId, workspacePath, isEphemeral, worktreeClonePath)
       logStream.end()
       await updateRun(runId, { status: 'failed', endedAt: Date.now() })
@@ -366,6 +369,8 @@ export async function startRunServer(
       child.stdin.end()
     }
   } catch (err) {
+    // Rethrown to the caller (WS 'runs:start' handler / triggerService), which
+    // reports it — capturing here too would double-report.
     cleanupRun(runId, workspacePath, isEphemeral, worktreeClonePath)
     logStream.end()
     await updateRun(runId, { status: 'failed', endedAt: Date.now() })
@@ -378,6 +383,9 @@ export async function startRunServer(
   // Handle spawn errors (binary not in PATH, etc.)
   child.on('error', (err) => {
     console.error(`[server/runner] Spawn error for run ${runId}:`, err)
+    reporter.captureException(err, {
+      tags: { component: 'runner', runId, runner: agent.runner },
+    })
     emitSystemMessage(`\n[Error: ${err.message}]\n`)
     finalizeRun('failed', undefined)
   })

@@ -175,6 +175,61 @@ environment at launch.
 `src/renderer/components/settings/SettingsManager.tsx`,
 `src/renderer/hooks/useAgentCredentials.ts`.
 
+## Error Reporting / Observability
+
+Error reporting is **provider-agnostic**. Application code never calls a vendor SDK
+directly — it calls a generic `ErrorReporter`, and one or more concrete providers
+(Sentry, console, …) are fanned out to behind the scenes. Sentry is just the first
+provider; swapping or adding backends is a local change with no call-site churn.
+
+**The seam** (`src/shared/observability.ts` — types only, no SDK imports):
+- `ErrorReporter` interface: `captureException`, `captureMessage`, `setUser`,
+  `addBreadcrumb`, `flush`.
+- `CaptureContext` (`tags` / `extra` / `level` / `user`) — passed per call. On the
+  **server**, attach the affected user per-capture via `ctx.user` (avoids global-scope
+  races across concurrent users); on the **frontend** use `setUser` (one user per tab).
+- `CompositeReporter` fans every call out to N child reporters (`flush` = `Promise.all`;
+  a throwing child never breaks the others). **Zero children = silent no-op** — that is
+  how "reporting disabled" is represented, so callers always hold a real reporter.
+
+**Providers** (platform-specific, one dir per side):
+- Server — `src/server/observability/`: `sentryReporter.ts` (`@sentry/node`),
+  `consoleReporter.ts`, `index.ts`.
+- Frontend — `src/renderer/observability/`: `sentryReporter.ts` (`@sentry/react`),
+  `consoleReporter.ts`, `index.ts`.
+- Both `index.ts` export a stable **delegating singleton** `reporter` (its identity never
+  changes; the inner composite is swapped in place by `initObservability`, so
+  `import { reporter }` is safe regardless of init order). Import `reporter` everywhere;
+  never import a vendor SDK outside its `*Reporter.ts`.
+
+**Adding a provider**: implement `ErrorReporter` in a new `<name>Reporter.ts` on each side
+you need, add its name to the known-reporters list + `switch` in that side's `index.ts`.
+No call sites change.
+
+**Selecting providers** — env var **`CONDUIT_ERROR_REPORTER`**, a comma list
+(e.g. `sentry,console`; whitespace/case-tolerant, unknown names ignored). When unset:
+`sentry` if `SENTRY_DSN` is set, else empty (silent). The server resolves the list at
+startup and echoes it to the browser via `GET /api/runtime-config` (`errorReporters`), so
+both sides build the same composite.
+
+**Coverage** (server, all via `reporter.*`): the WS-handler catch (tagged with channel +
+user), the startup catch, an Express error-handling middleware (last `app.use`, catches
+all HTTP routes), `unhandledRejection` / `uncaughtException` handlers, and the agent
+runner / trigger service / repo-sync background paths. `reporter.flush(2000)` runs on
+graceful shutdown. Frontend: the React `ErrorBoundary` reports via `reporter`.
+
+**Runtime env vars**: `SENTRY_DSN`, `SENTRY_ENVIRONMENT` (falls back to `NODE_ENV`),
+`SENTRY_RELEASE` (falls back to `GIT_SHA`), `SENTRY_TRACES_SAMPLE_RATE` (default `0`).
+
+**Source maps** (readable production traces) — build-time, gated on **`SENTRY_AUTH_TOKEN`**;
+builds without it skip upload entirely and emit no public maps:
+- Frontend: `@sentry/vite-plugin` in `vite.server.config.ts` uploads renderer maps and
+  deletes them from `out/renderer/` after upload (never served).
+- Server: `tsconfig.server.json` emits maps; `scripts/upload-server-sourcemaps.mjs`
+  (run as the last step of `npm run build`) uploads `out/server|main|shared` via
+  `@sentry/cli`. Also set `SENTRY_ORG`, `SENTRY_PROJECT`, and a release
+  (`SENTRY_RELEASE` / `GIT_SHA`).
+
 ## Data Storage
 
 All data lives under `~/.conduit/` (or `$CONDUIT_DATA_DIR`):

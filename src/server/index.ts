@@ -1,14 +1,6 @@
-import * as Sentry from '@sentry/node'
-
-// Initialise Sentry as early as possible so it captures startup errors.
-if (process.env.SENTRY_DSN) {
-  Sentry.init({
-    dsn: process.env.SENTRY_DSN,
-    environment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV ?? 'production',
-    release: process.env.SENTRY_RELEASE ?? process.env.GIT_SHA,
-    tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE ?? 0),
-  })
-}
+// Initialise error reporting BEFORE any other import loads (see ./observability/instrument).
+import './observability/instrument'
+import { reporter, getReporterNames } from './observability'
 
 import express from 'express'
 import cookieParser from 'cookie-parser'
@@ -76,6 +68,7 @@ import { listGroups, getUserGroupIds } from '../main/db/queries/groups'
 import { getCredentialStatus, setCredential } from '../main/db/queries/agentCredentials'
 import { getSession as getDbSession, deleteExpiredSessions } from '../main/db/queries/sessions'
 import { ensureLocalSecretKey } from './localSecret'
+import type { ReporterUser } from '../shared/observability'
 import type {
   AgentConfig,
   GlobalMcpServer,
@@ -118,8 +111,17 @@ app.get('/api/runtime-config', (_req, res) => {
     sentryDsn: process.env.SENTRY_DSN ?? null,
     sentryEnvironment: process.env.SENTRY_ENVIRONMENT ?? process.env.NODE_ENV ?? null,
     sentryRelease: process.env.SENTRY_RELEASE ?? process.env.GIT_SHA ?? null,
+    errorReporters: getReporterNames(),
   })
 })
+
+/**
+ * Map a request's acting user onto the error-reporter user shape. `RequestContext`
+ * only carries the user id (email/name aren't available here), so we attach the id.
+ */
+function contextToReporterUser(context: RequestContext): ReporterUser {
+  return { id: context.userId }
+}
 
 // ─── IP Restrictions ──────────────────────────────────────────────────────────
 
@@ -173,6 +175,14 @@ const triggerService = new TriggerService(broadcast)
 
 // Inbound trigger HTTP endpoints. Registered before SPA catch-all but after triggerService.
 app.use('/api/triggers', express.json({ limit: '1mb' }), createTriggerRoutes(triggerService))
+
+// Express error-handling middleware — must be the LAST app.use so it catches
+// errors from any preceding route/static handler. The 4-arg signature is what
+// marks it as an error handler; it captures then forwards to Express's default.
+app.use((err: unknown, req: express.Request, _res: express.Response, next: express.NextFunction) => {
+  reporter.captureException(err, { tags: { path: req.path } })
+  next(err)
+})
 
 // ─── Channel handlers ─────────────────────────────────────────────────────────
 
@@ -679,7 +689,10 @@ wss.on('connection', (ws, req) => {
       const result = await handler(msg.args ?? [], ws, context)
       ws.send(JSON.stringify({ type: 'response', id: msg.id, result }))
     } catch (err: unknown) {
-      if (process.env.SENTRY_DSN) Sentry.captureException(err)
+      reporter.captureException(err, {
+        tags: { channel: msg.channel },
+        user: contextToReporterUser(context),
+      })
       const message = err instanceof Error ? err.message : String(err)
       ws.send(JSON.stringify({ type: 'error', id: msg.id, error: message }))
     }
@@ -802,7 +815,7 @@ async function start(): Promise<void> {
   // Graceful shutdown. K8s sends SIGTERM and waits up to
   // terminationGracePeriodSeconds (default 30s) before SIGKILL.
   let shuttingDown = false
-  const shutdown = (signal: string) => {
+  const shutdown = async (signal: string) => {
     if (shuttingDown) return
     shuttingDown = true
     console.log(`[server] Received ${signal}, draining…`)
@@ -810,6 +823,8 @@ async function start(): Promise<void> {
     for (const ws of clients) ws.close(1001, 'Server shutting down')
     triggerService.stop()
     repoSyncService.stop()
+    // Flush buffered error events so shutdown-time reports are delivered.
+    await reporter.flush(2000).catch(() => {})
     // Give in-flight requests up to 10s to finish, then exit.
     setTimeout(() => process.exit(0), 10_000).unref()
   }
@@ -817,8 +832,28 @@ async function start(): Promise<void> {
   process.on('SIGINT', () => shutdown('SIGINT'))
 }
 
+// Global safety nets for process-level errors that escape all other handlers.
+// These are our generic capture path (not Sentry's built-in integrations, which
+// are disabled in sentryReporter.ts) so every configured provider sees them.
+// We always console.error first, so diagnostics survive even when no reporter is
+// configured (empty composite) — matching Node's default stderr behaviour.
+process.on('unhandledRejection', (reason) => {
+  console.error('[server] Unhandled promise rejection:', reason)
+  reporter.captureException(reason, { tags: { kind: 'unhandledRejection' } })
+})
+process.on('uncaughtException', (err) => {
+  console.error('[server] Uncaught exception:', err)
+  reporter.captureException(err, { tags: { kind: 'uncaughtException' } })
+  // Flush best-effort, then exit non-zero regardless of flush outcome. Guard the
+  // promise so a rejecting flush can't itself become an unhandledRejection.
+  reporter
+    .flush(2000)
+    .catch(() => {})
+    .finally(() => process.exit(1))
+})
+
 start().catch((err) => {
   console.error('[server] Startup failed:', err)
-  if (process.env.SENTRY_DSN) Sentry.captureException(err)
+  reporter.captureException(err, { tags: { phase: 'startup' } })
   process.exit(1)
 })

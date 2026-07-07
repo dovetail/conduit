@@ -2,6 +2,7 @@ import cron, { type ScheduledTask } from 'node-cron'
 import type { Trigger, TriggerContext, CronTriggerConfig, ExecutionRun } from '../../shared/types'
 import { listAllEnabledTriggers, getTrigger, updateTrigger } from '../../main/db/queries/triggers'
 import { startRunServer } from '../runner'
+import { reporter } from '../observability'
 
 type BroadcastFn = (channel: string, payload: unknown) => void
 
@@ -84,6 +85,9 @@ export class TriggerService {
       return run
     } catch (err) {
       console.error(`[triggers] Failed to execute trigger "${trigger.name}":`, err)
+      reporter.captureException(err, {
+        tags: { component: 'triggers', triggerId: trigger.id, agentId: trigger.agentId },
+      })
       return null
     }
   }

@@ -4,6 +4,7 @@ import { listRepositories, getRepository, updateRepository } from '../main/db/qu
 import { cloneRepo, fetchRepo, removeWorktree } from './gitOps'
 import { resolveRepoToken } from './githubApp'
 import { DEV_CONTEXT } from './auth/config'
+import { reporter } from './observability'
 import type { BroadcastFn } from './runner'
 import type { RepoSyncStatus } from '../shared/types'
 
@@ -72,6 +73,7 @@ export class RepoSyncService {
           })
           await this.broadcastStatus(repoId)
         } catch (err) {
+          reporter.captureException(err, { tags: { component: 'repoSync', repoId, op: 'clone' } })
           const message = err instanceof Error ? err.message : String(err)
           await updateRepository(repoId, { syncStatus: 'error', syncError: message })
           await this.broadcastStatus(repoId)
@@ -88,6 +90,7 @@ export class RepoSyncService {
           })
           await this.broadcastStatus(repoId)
         } catch (err) {
+          reporter.captureException(err, { tags: { component: 'repoSync', repoId, op: 'fetch' } })
           const message = err instanceof Error ? err.message : String(err)
           // Keep the repo usable — just mark the error but don't lose 'ready' state
           // if we had a successful clone before
