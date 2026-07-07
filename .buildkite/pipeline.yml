@@ -13,12 +13,26 @@
 #   EKS_CLUSTER       — target EKS cluster name
 #   BUILD_QUEUE       — agent queue for the build step
 #   DEPLOY_QUEUE      — agent queue for the deploy step
+#   SENTRY_AUTH_TOKEN — (optional, secret) enables Sentry source-map upload at
+#                       build time so prod stack traces symbolicate. When unset,
+#                       the build still succeeds and just skips the upload.
+#
+# GIT_SHA / Sentry release: the image is tagged and released as $BUILDKITE_COMMIT
+# (passed as the GIT_SHA build arg → baked into the image → Sentry release at
+# runtime), so uploaded source maps line up with the events they explain.
 
 env:
   AWS_REGION: "us-east-1"
   IMAGE_PLATFORM: "linux/amd64"
   K8S_NAMESPACE: "conduit"
   K8S_DEPLOYMENT: "conduit-deployment"
+  # ── Sentry source-map upload (optional) ─────────────────────────────────────
+  # Grouped here so it's easy to see/remove. ORG/PROJECT are not secret and are
+  # safe to commit; the token is SENTRY_AUTH_TOKEN (secret, set in the BK UI —
+  # see header). The build self-skips the upload if any of the three is missing,
+  # so this whole block is optional for forks that don't use Sentry.
+  SENTRY_ORG: "dovetail"
+  SENTRY_PROJECT: "conduit"
 
 steps:
   # ── Build + push image ─────────────────────────────────────────────────────
@@ -32,15 +46,25 @@ steps:
       - 'echo "--- :aws-ecr: Login to ECR"'
       - aws ecr get-login-password --region "$$AWS_REGION" | docker login --username AWS --password-stdin "$$ECR_REGISTRY"
       - 'echo "--- :docker: Build linux/amd64 image"'
-      - >
-        docker buildx build
-        --platform "$$IMAGE_PLATFORM"
-        --tag "$$ECR_REGISTRY/$$ECR_REPO:$$BUILDKITE_COMMIT"
-        --tag "$$ECR_REGISTRY/$$ECR_REPO:master"
-        --cache-from "type=registry,ref=$$ECR_REGISTRY/$$ECR_REPO:buildcache"
-        --cache-to "type=registry,ref=$$ECR_REGISTRY/$$ECR_REPO:buildcache,mode=max"
-        --push
-        .
+      # Pass the Sentry auth token as a BuildKit secret only when it's set, so
+      # the build still works (upload self-skips) for forks/PRs without Sentry.
+      - |
+        SENTRY_SECRET_ARG=""
+        if [ -n "$$SENTRY_AUTH_TOKEN" ]; then
+          SENTRY_SECRET_ARG="--secret id=sentry_auth_token,env=SENTRY_AUTH_TOKEN"
+        fi
+        docker buildx build \
+          --platform "$$IMAGE_PLATFORM" \
+          --tag "$$ECR_REGISTRY/$$ECR_REPO:$$BUILDKITE_COMMIT" \
+          --tag "$$ECR_REGISTRY/$$ECR_REPO:master" \
+          --build-arg GIT_SHA="$$BUILDKITE_COMMIT" \
+          --build-arg SENTRY_ORG="$$SENTRY_ORG" \
+          --build-arg SENTRY_PROJECT="$$SENTRY_PROJECT" \
+          $$SENTRY_SECRET_ARG \
+          --cache-from "type=registry,ref=$$ECR_REGISTRY/$$ECR_REPO:buildcache" \
+          --cache-to "type=registry,ref=$$ECR_REGISTRY/$$ECR_REPO:buildcache,mode=max" \
+          --push \
+          .
     plugins:
       - cultureamp/aws-assume-role#v0.1.0:
           role: "$DEPLOY_ROLE_ARN"

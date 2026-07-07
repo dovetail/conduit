@@ -3,6 +3,21 @@ FROM node:22-slim AS builder
 
 WORKDIR /app
 
+# ── Build/release metadata + optional Sentry source-map upload ───────────────
+# All optional — a plain `docker build` with none of these still succeeds.
+#   GIT_SHA         generic build identifier. Baked into the runtime image (prod
+#                   stage below) and used as the Sentry release, so uploaded
+#                   source maps line up with runtime events.
+#   SENTRY_ORG /    only used to upload source maps. `npm run build` self-skips
+#   SENTRY_PROJECT  the upload unless ORG + PROJECT + the sentry_auth_token
+#                   secret are all present (see scripts/upload-server-sourcemaps.mjs
+#                   and vite.server.config.ts). None of this is Buildkite- or
+#                   Sentry-specific to the Dockerfile — the CI that supplies the
+#                   values lives outside it (.buildkite/pipeline.yml here).
+ARG GIT_SHA=""
+ARG SENTRY_ORG=""
+ARG SENTRY_PROJECT=""
+
 # AWS RDS CA bundle for IAM-auth Postgres connections.
 # https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/UsingWithRDS.SSL.html
 # Fetched here so the certificate becomes part of the build cache, and so the
@@ -17,8 +32,14 @@ RUN npm ci
 
 COPY . .
 
-# Build renderer (out/renderer/) + server JS (out/server/)
-RUN npm run build
+# Build renderer (out/renderer/) + server JS (out/server/). The Sentry auth
+# token is mounted as a BuildKit secret (never baked into an image layer) and is
+# optional — absent ⇒ empty ⇒ the source-map upload is skipped. (This Dockerfile
+# already requires BuildKit for `ADD --chmod` above.)
+RUN --mount=type=secret,id=sentry_auth_token \
+    GIT_SHA="$GIT_SHA" SENTRY_ORG="$SENTRY_ORG" SENTRY_PROJECT="$SENTRY_PROJECT" \
+    SENTRY_AUTH_TOKEN="$(cat /run/secrets/sentry_auth_token 2>/dev/null || true)" \
+    npm run build
 
 # Place the RDS CA bundle next to the compiled DB module so `path.join(
 # __dirname, 'global-bundle.pem')` finds it in `out/main/db/`.
@@ -82,6 +103,12 @@ VOLUME /data
 ENV CONDUIT_DATA_DIR=/data
 ENV PORT=7456
 ENV NODE_ENV=production
+
+# Baked-in build identifier — used as the Sentry release at runtime so error
+# events match the source maps uploaded for this commit. Empty in local/dev
+# builds (harmless; Sentry release just goes untagged).
+ARG GIT_SHA=""
+ENV GIT_SHA=${GIT_SHA}
 
 EXPOSE 7456
 
