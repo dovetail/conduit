@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { handleCallback } from './service'
+import { reporter } from '../observability'
 
 function escapeHtml(s: string): string {
   return s
@@ -27,6 +28,15 @@ export function createMcpOAuthRouter(broadcast: (channel: string, payload: unkno
     const result = await handleCallback(q)
     if (result.serverUrl) {
       broadcast('mcp:oauth:complete', { serverUrl: result.serverUrl, success: result.ok, error: result.error })
+    }
+    if (!result.ok) {
+      // Callback failures (invalid/expired state, token-exchange errors, provider
+      // rejections) are otherwise only shown in the popup — report them so MCP
+      // connection problems are diagnosable in the error reporter.
+      reporter.captureMessage(`MCP OAuth callback failed: ${result.error ?? 'unknown'}`, 'error', {
+        tags: { kind: 'mcp_oauth_callback', serverUrl: result.serverUrl ?? 'unknown' },
+        extra: { error: result.error },
+      })
     }
     res.status(200).type('html').send(resultPage(result.ok, result.error ?? ''))
   })

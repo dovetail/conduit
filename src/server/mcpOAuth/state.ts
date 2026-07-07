@@ -1,3 +1,5 @@
+import { putPendingAuth, takePendingAuth } from '../../main/db/queries/mcpOAuthPending'
+
 export interface PendingAuth {
   codeVerifier: string
   serverUrl: string
@@ -11,18 +13,17 @@ export interface PendingAuth {
   createdAt: number
 }
 
-export const TTL_MS = 10 * 60 * 1000
-
-const pending = new Map<string, PendingAuth>()
-
-export function putPending(state: string, entry: PendingAuth): void {
-  pending.set(state, entry)
+/**
+ * Pending OAuth state is persisted in Postgres (see mcpOAuthPending), NOT an
+ * in-process Map: `startAuth` and the `/mcp/oauth/callback` HTTP request can land
+ * on different pods in a multi-replica deployment, so the callback must be able to
+ * find the state regardless of which pod created it.
+ */
+export function putPending(state: string, entry: PendingAuth): Promise<void> {
+  return putPendingAuth(state, entry)
 }
 
-export function takePending(state: string): PendingAuth | null {
-  const entry = pending.get(state)
-  if (!entry) return null
-  pending.delete(state)
-  if (Date.now() - entry.createdAt > TTL_MS) return null
-  return entry
+/** Atomically consume pending state; resolves null if unknown or expired. */
+export function takePending(state: string): Promise<PendingAuth | null> {
+  return takePendingAuth(state)
 }

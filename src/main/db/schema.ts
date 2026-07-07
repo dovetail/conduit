@@ -89,6 +89,18 @@ export const mcpOAuthClients = pgTable('mcp_oauth_clients', {
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),
 })
 
+// Short-lived pending OAuth authorization state (PKCE verifier, target server,
+// resolved client, redirect URI, resource), keyed by the OAuth `state` param.
+// Persisted rather than kept in-process so the /mcp/oauth/callback can find it on
+// ANY pod in a multi-replica deployment (an in-memory Map is lost when the
+// callback load-balances to a different pod → "reauth then disconnected"). The
+// payload is encrypted at rest and consumed (deleted) on use; rows expire ~10 min.
+export const mcpOAuthPending = pgTable('mcp_oauth_pending', {
+  state: text('state').primaryKey(),
+  dataEnc: text('data_enc').notNull(),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+})
+
 // Per-user API keys/tokens for the agent CLIs (claude/amp/cursor), encrypted at
 // rest. Injected into the runner process env at launch. One row per (user, runner).
 export const agentCredentials = pgTable('agent_credentials', {

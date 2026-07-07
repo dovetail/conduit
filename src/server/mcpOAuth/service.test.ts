@@ -23,6 +23,8 @@ vi.mock('../../main/db/queries/oauthTokens', () => ({
   getConnectedByUserId: vi.fn(async () => 'u1'),
 }))
 vi.mock('./flow', async (orig) => ({ ...(await orig() as any), exchangeCode: vi.fn(async () => ({ serverUrl: 'https://mcp.linear.app', accessToken: 'AT', tokenType: 'Bearer' })) }))
+// Pending state is Postgres-backed; stub it so unit tests don't need a DB.
+vi.mock('./state', () => ({ putPending: vi.fn(async () => {}), takePending: vi.fn(async () => null) }))
 
 import { startAuth, getStatus, resolveServerTarget, revoke, getRedirectUri } from './service'
 import { canAccessEntity, isEntityOwner } from '../../main/db/queries/access'

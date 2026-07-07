@@ -69,6 +69,7 @@ import { listUsers, searchUsers } from '../main/db/queries/users'
 import { listGroups, getUserGroupIds } from '../main/db/queries/groups'
 import { getCredentialStatus, setCredential } from '../main/db/queries/agentCredentials'
 import { getSession as getDbSession, deleteExpiredSessions } from '../main/db/queries/sessions'
+import { deleteExpiredPendingAuth } from '../main/db/queries/mcpOAuthPending'
 import { ensureLocalSecretKey } from './localSecret'
 import type { ReporterUser } from '../shared/observability'
 import type {
@@ -823,6 +824,15 @@ async function start(): Promise<void> {
         .catch((err) => console.error('[server] Session cleanup failed:', err))
     }, 60 * 60 * 1000)
   }
+
+  // Periodic cleanup of expired pending OAuth state (hourly), regardless of auth
+  // mode — MCP OAuth is available in dev too. Consumed rows are already deleted;
+  // this only sweeps abandoned flows.
+  setInterval(() => {
+    deleteExpiredPendingAuth().catch((err) =>
+      console.error('[server] Pending OAuth cleanup failed:', err)
+    )
+  }, 60 * 60 * 1000)
 
   // MCP OAuth redirect URIs must be byte-stable across the register→authorize→token
   // steps or providers reject them ("Mismatching redirect URI" — e.g. Datadog).

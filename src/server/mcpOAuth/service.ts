@@ -69,7 +69,7 @@ export async function startAuth(serverId: string, isGlobal: boolean, userId: str
   const client = await ensureRegisteredClient(t.serverUrl, t.oauthConfig, redirectUri)
   const { verifier, challenge } = generatePkce()
   const state = crypto.randomBytes(16).toString('hex')
-  putPending(state, {
+  await putPending(state, {
     codeVerifier: verifier,
     serverUrl: t.serverUrl,
     tokenOwner: t.tokenOwner,
@@ -140,7 +140,7 @@ export async function probeOAuthSupport(config: McpServerEntry): Promise<McpOAut
 export async function handleCallback(query: Record<string, string | undefined>): Promise<{ ok: boolean; serverUrl?: string; error?: string }> {
   const { code, state, error, error_description } = query
   if (!state) return { ok: false, error: 'Missing state' }
-  const pending = takePending(state)
+  const pending = await takePending(state)
   if (!pending) return { ok: false, error: 'Invalid or expired state' }
   if (error) return { ok: false, serverUrl: pending.serverUrl, error: error_description ?? error }
   if (!code) return { ok: false, serverUrl: pending.serverUrl, error: 'No authorization code' }

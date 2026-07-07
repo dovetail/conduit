@@ -267,6 +267,12 @@ export async function initDb(): Promise<void> {
       updated_at BIGINT NOT NULL,
       PRIMARY KEY (user_id, runner)
     );
+
+    CREATE TABLE IF NOT EXISTS mcp_oauth_pending (
+      state TEXT PRIMARY KEY,
+      data_enc TEXT NOT NULL,
+      created_at BIGINT NOT NULL
+    );
   `)
 
   // Guarded primary-key swap for oauth_tokens: drop the old single-column PK

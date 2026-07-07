@@ -31,6 +31,12 @@ services:
       DATABASE_SSL: disable
       PORT: "7456"
       CONDUIT_DATA_DIR: /data
+      # REQUIRED in any deployment reached via a hostname other than
+      # http://localhost:7456 (i.e. all real/prod deployments, esp. multi-pod):
+      # the canonical public URL. MCP OAuth redirect URIs are built from this and
+      # MUST be byte-stable, or providers reject reconnects ("Mismatching redirect
+      # URI" — Datadog). Unset ⇒ derived from the (variable) browser origin.
+      # CONDUIT_BASE_URL: https://conduit.example.com
       # Optional:
       # GITHUB_PAT: ghp_xxx
       # SLACK_SIGNING_SECRET: xxx
