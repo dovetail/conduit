@@ -127,6 +127,8 @@ export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(funct
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const initializedRef = useRef<string | null>(null)
+  const nameInputRef = useRef<HTMLInputElement>(null)
+  const focusedForRef = useRef<string | null>(null)
 
   // Initialize draft from agent data
   useEffect(() => {
@@ -145,6 +147,15 @@ export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(funct
         effort: agent.effort,
         enableRepoMcps: agent.enableRepoMcps ?? false,
       })
+    }
+  }, [agent])
+
+  // Land ready to type when opening an unnamed agent (e.g. a fresh clone). Focus
+  // once per agent id so re-renders and manual edits don't steal focus back.
+  useEffect(() => {
+    if (agent && agent.name === '' && focusedForRef.current !== agent.id) {
+      focusedForRef.current = agent.id
+      nameInputRef.current?.focus()
     }
   }, [agent])
 
@@ -246,6 +257,7 @@ export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(funct
             )}
           </div>
           <Input
+            ref={nameInputRef}
             value={draft.name ?? ''}
             onChange={(e) => handleChange('name', e.target.value)}
             placeholder="My Agent"

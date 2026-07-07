@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@renderer/lib/ipc'
+import { buildCloneInput } from '@shared/agentClone'
 import type { AgentConfig } from '@shared/types'
 
 const AGENTS_KEY = ['agents'] as const
@@ -35,6 +36,21 @@ export function useCreateAgent() {
   return useMutation({
     mutationFn: (data: Omit<AgentConfig, 'id' | 'createdAt' | 'updatedAt'>) =>
       api.agents.create(data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: AGENTS_KEY })
+    },
+  })
+}
+
+/**
+ * Clone an existing agent into a new agent owned by the acting user. Copies the
+ * configuration with a blank name and no gist link, and does NOT carry over run
+ * history, triggers, or shares. See `buildCloneInput`.
+ */
+export function useCloneAgent() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (agent: AgentConfig) => api.agents.create(buildCloneInput(agent)),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: AGENTS_KEY })
     },

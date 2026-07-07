@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Trash2, Save, CheckCircle2, Loader2 } from 'lucide-react'
+import { Trash2, Save, CheckCircle2, Loader2, Copy } from 'lucide-react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@renderer/components/ui/button'
@@ -8,7 +8,7 @@ import { RunControls } from '@renderer/components/runs/RunControls'
 import { RunHistory } from '@renderer/components/runs/RunHistory'
 import { RunDetail } from '@renderer/components/runs/RunDetail'
 import { TerminalPane } from '@renderer/components/layout/TerminalPane'
-import { useAgent, useDeleteAgent } from '@renderer/hooks/useAgents'
+import { useAgent, useDeleteAgent, useCloneAgent } from '@renderer/hooks/useAgents'
 import { useRuns } from '@renderer/hooks/useRuns'
 import { useAuth } from '@renderer/contexts/AuthContext'
 import { useUIStore } from '@renderer/store/ui'
@@ -26,6 +26,7 @@ export function MainPanel({ agentId }: MainPanelProps) {
   const { data: agent } = useAgent(agentId)
   const { data: runs } = useRuns(agentId)
   const deleteAgent = useDeleteAgent()
+  const cloneAgent = useCloneAgent()
   const { user } = useAuth()
   const { activeRunId, setActiveRun, selectAgent, viewedRunId, setViewedRun } = useUIStore()
   const isOwner = agent?.ownerId === user?.id
@@ -72,6 +73,17 @@ export function MainPanel({ agentId }: MainPanelProps) {
     selectAgent(null)
   }
 
+  const handleCloneAgent = async () => {
+    if (!agent) return
+    try {
+      const clone = await cloneAgent.mutateAsync(agent)
+      selectAgent(clone.id)
+      setTab('configure')
+    } catch (e) {
+      console.error('Failed to clone agent:', e)
+    }
+  }
+
   const isLive =
     activeRunId !== null &&
     (liveRunStatus === 'running' || liveRunStatus === 'launched')
@@ -85,7 +97,7 @@ export function MainPanel({ agentId }: MainPanelProps) {
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)] flex-shrink-0">
         <h1 className="text-sm font-semibold text-[var(--text-primary)] truncate">
-          {agent?.name ?? 'Agent'}
+          {agent ? (agent.name || '(Untitled agent)') : 'Agent'}
         </h1>
         <div className="flex items-center gap-2">
           {saveState === 'saved' && (
@@ -123,6 +135,20 @@ export function MainPanel({ agentId }: MainPanelProps) {
               setTab('runs')
             }}
           />
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleCloneAgent}
+            disabled={!agent || cloneAgent.isPending}
+            className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] px-1.5"
+            title="Clone this agent into a new agent"
+          >
+            {cloneAgent.isPending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Copy className="h-4 w-4" />
+            )}
+          </Button>
           {isOwner && (
             <Button
               variant="ghost"

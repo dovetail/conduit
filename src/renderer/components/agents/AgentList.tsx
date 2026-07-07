@@ -71,7 +71,7 @@ function AgentItem({ agent, isSelected, onClick }: AgentItemProps) {
             isSelected ? 'text-[var(--text-primary)]' : ''
           )}
         >
-          {agent.name}
+          {agent.name || '(Untitled agent)'}
         </div>
         <div className="flex items-center gap-1 text-xs text-[var(--text-secondary)] mt-0.5">
           <RunnerIcon runner={agent.runner} />
