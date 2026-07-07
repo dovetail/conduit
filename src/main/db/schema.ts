@@ -79,6 +79,11 @@ export const mcpOAuthClients = pgTable('mcp_oauth_clients', {
   // the MCP server. Discovered from protected-resource / AS metadata; falls back
   // to the server URL.
   resource: text('resource'),
+  // The exact redirect URI this client was DCR-registered with. The provider
+  // validates every auth/token request's redirect_uri against what the client
+  // registered, so we reuse a cached client only when this matches the current
+  // redirect URI; otherwise it's stale and we re-register.
+  redirectUri: text('redirect_uri'),
   registrationData: text('registration_data'),     // raw DCR response JSON
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),

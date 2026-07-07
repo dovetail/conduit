@@ -11,6 +11,8 @@ export interface McpOAuthClient {
   tokenEndpoint: string
   /** Canonical MCP resource URI (RFC 8707) sent as the `resource` indicator. */
   resource?: string
+  /** The exact redirect URI this client was registered with (for staleness checks). */
+  redirectUri?: string
   registrationData?: string
 }
 
@@ -22,6 +24,7 @@ function rowToClient(row: typeof mcpOAuthClients.$inferSelect): McpOAuthClient {
     authorizationEndpoint: row.authorizationEndpoint,
     tokenEndpoint: row.tokenEndpoint,
     resource: row.resource ?? undefined,
+    redirectUri: row.redirectUri ?? undefined,
     registrationData: row.registrationData ?? undefined,
   }
 }
@@ -41,6 +44,7 @@ export async function saveClient(client: McpOAuthClient): Promise<void> {
     authorizationEndpoint: client.authorizationEndpoint,
     tokenEndpoint: client.tokenEndpoint,
     resource: client.resource ?? null,
+    redirectUri: client.redirectUri ?? null,
     registrationData: client.registrationData ?? null,
     createdAt: now,
     updatedAt: now,
@@ -53,6 +57,7 @@ export async function saveClient(client: McpOAuthClient): Promise<void> {
       authorizationEndpoint: values.authorizationEndpoint,
       tokenEndpoint: values.tokenEndpoint,
       resource: values.resource,
+      redirectUri: values.redirectUri,
       registrationData: values.registrationData,
       updatedAt: now,
     },

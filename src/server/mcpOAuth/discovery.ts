@@ -178,38 +178,55 @@ async function registerClient(
   }
 }
 
-/**
- * Whether a cached client's registered `redirect_uris` include the given URI.
- *
- * OAuth providers validate the request's `redirect_uri` against exactly the set
- * registered for the client (Sentry rejects at authorize; Datadog, being OAuth
- * 2.1, at the token step — "Mismatching redirect URI"). When the DCR response
- * didn't echo `redirect_uris`, or there's no registration data at all (e.g. a
- * manually configured `clientId`), we can't tell — so we assume it's fine rather
- * than needlessly re-registering (some providers rate-limit DCR, e.g. Datadog at
- * 10/60s).
- */
-function clientAcceptsRedirect(client: McpOAuthClient, redirectUri: string): boolean {
-  if (!client.registrationData) return true
+/** Parse the `redirect_uris` a DCR response recorded, or null if unavailable. */
+function registeredRedirectUris(client: McpOAuthClient): string[] | null {
+  if (!client.registrationData) return null
   try {
-    const data = JSON.parse(client.registrationData) as Record<string, unknown>
-    const uris = data.redirect_uris
-    if (!Array.isArray(uris)) return true
-    return uris.includes(redirectUri)
+    const uris = (JSON.parse(client.registrationData) as Record<string, unknown>).redirect_uris
+    return Array.isArray(uris) ? (uris as string[]) : null
   } catch {
-    return true
+    return null
   }
+}
+
+/**
+ * Whether a cached client can be reused for the current `redirectUri`.
+ *
+ * OAuth providers validate every auth/token request's `redirect_uri` against
+ * exactly what the client registered (Sentry rejects at authorize; Datadog, being
+ * OAuth 2.1, at the token step — "Mismatching redirect URI"). So reuse must be
+ * deterministic:
+ *  - Manually configured clients: we don't manage their redirect registration, so
+ *    trust them as long as the configured clientId still matches.
+ *  - DCR clients with a recorded `redirectUri` (the authoritative signal): reuse
+ *    only on an exact match.
+ *  - Legacy DCR rows (no recorded `redirectUri`, from before this column existed):
+ *    fall back to the `redirect_uris` echoed in `registrationData`; if those can't
+ *    be verified, re-register rather than reuse a possibly-stale client. This is
+ *    what fixes a client registered against an earlier origin — reusing it sends a
+ *    redirect_uri the provider never registered.
+ */
+function cachedClientIsUsable(
+  cached: McpOAuthClient,
+  oauthConfig: McpOAuthConfig | undefined,
+  redirectUri: string
+): boolean {
+  if (oauthConfig?.clientId) return cached.clientId === oauthConfig.clientId
+  if (cached.redirectUri != null) return cached.redirectUri === redirectUri
+  const uris = registeredRedirectUris(cached)
+  if (uris == null) return false
+  return uris.includes(redirectUri)
 }
 
 /**
  * Return a usable OAuth client for the MCP server, registering (DCR) and caching
  * one if none exists. Falls back to a manually configured clientId.
  *
- * A cached client is reused only when its registered `redirect_uris` accept the
- * current `redirectUri`; otherwise it's stale (registered against an earlier
- * origin / redirect URI) and would be rejected by the provider, so we re-register
- * against the current one. A cached client that predates the `resource` column is
- * backfilled in place (no re-registration).
+ * A cached client is reused only when it was registered for exactly the current
+ * `redirectUri`; otherwise it's stale (registered against an earlier origin) and
+ * the provider would reject the mismatch, so we re-register. A reusable client
+ * that predates the `resource`/`redirectUri` columns is backfilled in place (no
+ * re-registration, so we don't hit DCR rate limits).
  */
 export async function ensureRegisteredClient(
   serverUrl: string,
@@ -217,18 +234,20 @@ export async function ensureRegisteredClient(
   redirectUri: string
 ): Promise<McpOAuthClient> {
   const cached = await getClient(serverUrl)
-  if (cached && clientAcceptsRedirect(cached, redirectUri)) {
-    if (cached.resource) return cached
-    // Valid for this redirect URI but predates the resource column — backfill the
-    // resource without re-registering (avoids hitting DCR rate limits).
-    try {
-      const metadata = await discoverOAuthEndpoints(serverUrl)
-      const withResource: McpOAuthClient = { ...cached, resource: metadata.resource ?? serverUrl }
-      await saveClient(withResource)
-      return withResource
-    } catch {
-      return { ...cached, resource: serverUrl }
+  if (cached && cachedClientIsUsable(cached, oauthConfig, redirectUri)) {
+    if (cached.resource && cached.redirectUri) return cached
+    // Reusable but predates the resource/redirectUri columns — backfill in place.
+    let resource = cached.resource
+    if (!resource) {
+      try {
+        resource = (await discoverOAuthEndpoints(serverUrl)).resource ?? serverUrl
+      } catch {
+        resource = serverUrl
+      }
     }
+    const backfilled: McpOAuthClient = { ...cached, resource, redirectUri: cached.redirectUri ?? redirectUri }
+    await saveClient(backfilled)
+    return backfilled
   }
 
   const metadata = await discoverOAuthEndpoints(serverUrl)
@@ -257,6 +276,7 @@ export async function ensureRegisteredClient(
     authorizationEndpoint: oauthConfig?.authorizationUrl || metadata.authorization_endpoint,
     tokenEndpoint: oauthConfig?.tokenUrl || metadata.token_endpoint,
     resource: metadata.resource ?? serverUrl,
+    redirectUri,
     registrationData,
   }
   await saveClient(client)

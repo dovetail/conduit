@@ -160,4 +160,66 @@ describe('discovery', () => {
     expect(client.clientId).toBe('keep')
     expect(registered).toBe(0)
   })
+
+  it('reuses a client whose stored redirectUri matches (authoritative)', async () => {
+    clients.set('https://mcp.example.com', {
+      serverUrl: 'https://mcp.example.com', clientId: 'keep',
+      authorizationEndpoint: meta.authorization_endpoint, tokenEndpoint: meta.token_endpoint,
+      resource: 'https://mcp.example.com', redirectUri: 'https://conduit.example.com/mcp/oauth/callback',
+    })
+    const fetchSpy = vi.fn(async () => ({ ok: false }) as any)
+    vi.stubGlobal('fetch', fetchSpy)
+    const client = await ensureRegisteredClient('https://mcp.example.com', undefined, 'https://conduit.example.com/mcp/oauth/callback')
+    expect(client.clientId).toBe('keep')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('re-registers when the stored redirectUri differs (authoritative)', async () => {
+    clients.set('https://mcp.example.com', {
+      serverUrl: 'https://mcp.example.com', clientId: 'old',
+      authorizationEndpoint: meta.authorization_endpoint, tokenEndpoint: meta.token_endpoint,
+      resource: 'https://mcp.example.com', redirectUri: 'https://origin-a.test/mcp/oauth/callback',
+    })
+    let registered = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: any) => {
+      if (url.includes('.well-known')) return { ok: true, json: async () => meta } as any
+      if (url === meta.registration_endpoint) {
+        registered++
+        const b = JSON.parse(init.body)
+        return { ok: true, json: async () => ({ client_id: 'new', redirect_uris: b.redirect_uris }) } as any
+      }
+      return { ok: false } as any
+    }))
+    const client = await ensureRegisteredClient('https://mcp.example.com', undefined, 'https://origin-b.test/mcp/oauth/callback')
+    expect(registered).toBe(1)
+    expect(client.clientId).toBe('new')
+    expect(client.redirectUri).toBe('https://origin-b.test/mcp/oauth/callback')
+  })
+
+  // Regression: a legacy DCR row (no stored redirectUri) whose registrationData
+  // did NOT echo redirect_uris can't be verified — reusing it sends a redirect_uri
+  // the provider never registered ("Mismatching redirect URI"). Must re-register.
+  it('re-registers a legacy client whose redirect URI cannot be verified', async () => {
+    clients.set('https://mcp.example.com', {
+      serverUrl: 'https://mcp.example.com', clientId: 'stale',
+      authorizationEndpoint: meta.authorization_endpoint, tokenEndpoint: meta.token_endpoint,
+      registrationData: JSON.stringify({ client_id: 'stale' }), // no redirect_uris echoed
+      resource: 'https://mcp.example.com',
+      // no redirectUri — legacy row
+    })
+    let registered = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: any) => {
+      if (url.includes('.well-known')) return { ok: true, json: async () => meta } as any
+      if (url === meta.registration_endpoint) {
+        registered++
+        const b = JSON.parse(init.body)
+        return { ok: true, json: async () => ({ client_id: 'fresh', redirect_uris: b.redirect_uris }) } as any
+      }
+      return { ok: false } as any
+    }))
+    const client = await ensureRegisteredClient('https://mcp.example.com', undefined, 'https://conduit.example.com/mcp/oauth/callback')
+    expect(registered).toBe(1)
+    expect(client.clientId).toBe('fresh')
+    expect(client.redirectUri).toBe('https://conduit.example.com/mcp/oauth/callback')
+  })
 })

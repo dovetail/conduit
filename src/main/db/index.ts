@@ -251,12 +251,14 @@ export async function initDb(): Promise<void> {
       authorization_endpoint TEXT NOT NULL,
       token_endpoint TEXT NOT NULL,
       resource TEXT,
+      redirect_uri TEXT,
       registration_data TEXT,
       created_at BIGINT NOT NULL,
       updated_at BIGINT NOT NULL
     );
-    -- Idempotent add for mcp_oauth_clients created before the resource column existed.
+    -- Idempotent adds for mcp_oauth_clients created before these columns existed.
     ALTER TABLE mcp_oauth_clients ADD COLUMN IF NOT EXISTS resource TEXT;
+    ALTER TABLE mcp_oauth_clients ADD COLUMN IF NOT EXISTS redirect_uri TEXT;
 
     CREATE TABLE IF NOT EXISTS agent_credentials (
       user_id TEXT NOT NULL,
