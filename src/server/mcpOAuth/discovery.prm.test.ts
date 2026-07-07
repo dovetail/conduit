@@ -112,7 +112,11 @@ describe('discoverOAuthEndpoints — protected-resource-metadata path', () => {
     await expect(discoverOAuthEndpoints('https://unknown.example.com/mcp')).rejects.toThrow()
   })
 
-  it('resolves from base /.well-known/oauth-authorization-server WITHOUT touching PRM path', async () => {
+  it('resolves endpoints from base AS well-known but STILL fetches PRM for the canonical resource', async () => {
+    // Even when AS metadata is directly reachable, the canonical `resource`
+    // (RFC 8707 audience) only comes from PRM (RFC 9728). Skipping PRM here left
+    // the audience as the bare server URL, which made Linear/Sentry 401 on every
+    // call — so PRM must always be consulted for the resource.
     const asMetadata = {
       authorization_endpoint: 'https://direct.example.com/authorize',
       token_endpoint: 'https://direct.example.com/token',
@@ -121,17 +125,24 @@ describe('discoverOAuthEndpoints — protected-resource-metadata path', () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url === 'https://direct.example.com/.well-known/oauth-authorization-server')
         return mockResponse({ ok: true, json: async () => asMetadata })
+      if (url === 'https://direct.example.com')
+        return mockResponse({
+          ok: false,
+          status: 401,
+          wwwAuthenticate:
+            'Bearer resource_metadata="https://direct.example.com/.well-known/oauth-protected-resource"',
+        })
+      if (url === 'https://direct.example.com/.well-known/oauth-protected-resource')
+        return mockResponse({ ok: true, json: async () => ({ resource: 'https://direct.example.com/mcp' }) })
       return mockResponse({ ok: false })
     })
     vi.stubGlobal('fetch', fetchMock)
 
     const meta = await discoverOAuthEndpoints('https://direct.example.com')
     expect(meta.authorization_endpoint).toBe('https://direct.example.com/authorize')
-    // PRM resource fetch must NOT have been called
-    const prmCalls = fetchMock.mock.calls.filter(([u]) =>
-      u === 'https://direct.example.com' ||
-      u.includes('oauth-protected-resource')
-    )
-    expect(prmCalls).toHaveLength(0)
+    // The canonical resource is resolved from PRM, not the bare server URL.
+    expect(meta.resource).toBe('https://direct.example.com/mcp')
+    const prmCalls = fetchMock.mock.calls.filter(([u]) => u.includes('oauth-protected-resource'))
+    expect(prmCalls.length).toBeGreaterThan(0)
   })
 })

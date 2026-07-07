@@ -19,7 +19,7 @@
     "docker:build": "docker build -t conduit .",
     "docker:run": "docker run -p 7456:7456 conduit",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.web.json --noEmit",
-    "lint": "eslint . --ext .ts,.tsx --report-unused-disable-directives",
+    "lint": "eslint .",
     "test": "vitest run --passWithNoTests",
     "db:generate": "drizzle-kit generate",
     "seed": "tsx scripts/seed-global-mcps.ts",
@@ -34,8 +34,8 @@
     "@codemirror/theme-one-dark": "^6.1.2",
     "@octokit/auth-app": "^8.2.0",
     "@octokit/rest": "^21.0.2",
-    "@sentry/node": "^8.45.0",
-    "@sentry/react": "^8.45.0",
+    "@sentry/node": "^10.63.0",
+    "@sentry/react": "^10.63.0",
     "@tanstack/react-query": "^5.62.16",
     "@uiw/react-codemirror": "^4.23.7",
     "@xterm/addon-fit": "^0.10.0",
@@ -76,11 +76,17 @@
     "concurrently": "^9.2.1",
     "drizzle-kit": "^0.31.10",
     "eslint": "^9.17.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^15.15.0",
     "postcss": "^8.5.1",
     "tailwindcss": "^3.4.17",
     "tsx": "^4.21.0",
     "typescript": "^5.7.3",
-    "vite": "^6.0.7",
-    "vitest": "^2.1.8"
+    "typescript-eslint": "^8.63.0",
+    "vite": "^6.4.3",
+    "vitest": "^3.2.6"
+  },
+  "overrides": {
+    "esbuild": "^0.25.0"
   }
 }

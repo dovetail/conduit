@@ -147,9 +147,8 @@ async function listToolsUrl(config: McpServerEntry): Promise<McpToolsResult> {
     // Check if response is SSE or JSON
     const contentType = initRes.headers.get('content-type') ?? ''
 
-    let sessionId: string | undefined
     // Look for Mcp-Session-Id header
-    sessionId = initRes.headers.get('mcp-session-id') ?? undefined
+    const sessionId = initRes.headers.get('mcp-session-id') ?? undefined
 
     if (contentType.includes('text/event-stream')) {
       // Parse SSE response for initialize result

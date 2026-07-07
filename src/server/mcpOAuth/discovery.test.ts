@@ -59,19 +59,24 @@ describe('discovery', () => {
 
   it('registers a client via DCR and caches it', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: any) => {
+      if (url.includes('oauth-protected-resource'))
+        return { ok: true, json: async () => ({ resource: 'https://mcp.example.com/mcp' }) } as any
       if (url.includes('.well-known')) return { ok: true, json: async () => meta } as any
       if (url === meta.registration_endpoint) {
         expect(JSON.parse(init.body).redirect_uris).toContain('http://localhost:7456/mcp/oauth/callback')
         return { ok: true, json: async () => ({ client_id: 'dcr-123' }) } as any
       }
-      return { ok: false } as any
+      return { ok: false, headers: { get: () => null } } as any // serverUrl GET (no WWW-Authenticate)
     }))
     const client = await ensureRegisteredClient('https://mcp.example.com', undefined, 'http://localhost:7456/mcp/oauth/callback')
     expect(client.clientId).toBe('dcr-123')
-    // Cached — a second call must not hit the network again
+    // Canonical resource comes from PRM, not the bare server URL (RFC 8707 audience).
+    expect(client.resource).toBe('https://mcp.example.com/mcp')
+    // Cached — a second call must not hit the network again.
+    const callsAfterFirst = vi.mocked(fetch).mock.calls.length
     const again = await ensureRegisteredClient('https://mcp.example.com', undefined, 'http://localhost:7456/mcp/oauth/callback')
     expect(again.clientId).toBe('dcr-123')
-    expect(vi.mocked(fetch).mock.calls.length).toBe(2)
+    expect(vi.mocked(fetch).mock.calls.length).toBe(callsAfterFirst)
   })
 
   it('falls back to a manual clientId when no registration_endpoint', async () => {
@@ -133,7 +138,7 @@ describe('discovery', () => {
       serverUrl: 'https://mcp.example.com', clientId: 'keep',
       authorizationEndpoint: meta.authorization_endpoint, tokenEndpoint: meta.token_endpoint,
       registrationData: JSON.stringify({ client_id: 'keep', redirect_uris: ['https://origin-a.test/mcp/oauth/callback'] }),
-      resource: 'https://mcp.example.com',
+      resource: 'https://mcp.example.com/mcp', // canonical (already healed) — no re-discovery
     })
     const fetchSpy = vi.fn(async () => ({ ok: false }) as any)
     vi.stubGlobal('fetch', fetchSpy)
@@ -165,13 +170,37 @@ describe('discovery', () => {
     clients.set('https://mcp.example.com', {
       serverUrl: 'https://mcp.example.com', clientId: 'keep',
       authorizationEndpoint: meta.authorization_endpoint, tokenEndpoint: meta.token_endpoint,
-      resource: 'https://mcp.example.com', redirectUri: 'https://conduit.example.com/mcp/oauth/callback',
+      resource: 'https://mcp.example.com/mcp', redirectUri: 'https://conduit.example.com/mcp/oauth/callback',
     })
     const fetchSpy = vi.fn(async () => ({ ok: false }) as any)
     vi.stubGlobal('fetch', fetchSpy)
     const client = await ensureRegisteredClient('https://mcp.example.com', undefined, 'https://conduit.example.com/mcp/oauth/callback')
     expect(client.clientId).toBe('keep')
     expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  // Regression (Linear/Sentry 401-after-connect): a cached client whose resource
+  // is the bare server URL (the pre-PRM fallback = wrong token audience) must be
+  // corrected to the canonical PRM resource on reconnect, without re-registering.
+  it('self-heals a cached resource that is the bare server URL', async () => {
+    clients.set('https://mcp.example.com', {
+      serverUrl: 'https://mcp.example.com', clientId: 'keep',
+      authorizationEndpoint: meta.authorization_endpoint, tokenEndpoint: meta.token_endpoint,
+      resource: 'https://mcp.example.com', // bad fallback — the bug
+      redirectUri: 'https://conduit.example.com/mcp/oauth/callback',
+    })
+    let registered = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('oauth-protected-resource'))
+        return { ok: true, json: async () => ({ resource: 'https://mcp.example.com/mcp' }) } as any
+      if (url.includes('.well-known')) return { ok: true, json: async () => meta } as any
+      if (url === meta.registration_endpoint) { registered++; return { ok: true, json: async () => ({ client_id: 'x' }) } as any }
+      return { ok: false, headers: { get: () => null } } as any
+    }))
+    const client = await ensureRegisteredClient('https://mcp.example.com', undefined, 'https://conduit.example.com/mcp/oauth/callback')
+    expect(client.resource).toBe('https://mcp.example.com/mcp') // corrected to canonical audience
+    expect(client.clientId).toBe('keep') // reused, not re-registered
+    expect(registered).toBe(0)
   })
 
   it('re-registers when the stored redirectUri differs (authoritative)', async () => {

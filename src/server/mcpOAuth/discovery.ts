@@ -68,74 +68,107 @@ async function fetchAsMetadata(metadataUrl: string): Promise<OAuthServerMetadata
   }
 }
 
-export async function discoverOAuthEndpoints(serverUrl: string): Promise<OAuthServerMetadata> {
-  const base = serverUrl.replace(/\/$/, '')
-  // origin is used for RFC 9728 fallback PRM path (always host-rooted)
+interface ProtectedResourceMetadata {
+  /** The canonical resource identifier (RFC 9728 `resource`) — the token audience. */
+  resource?: string
+  /** Authorization servers advertised by the resource (RFC 9728). */
+  authorizationServers: string[]
+}
+
+/**
+ * Fetch the RFC 9728 protected-resource metadata for an MCP server. This is the
+ * ONLY authoritative source of the canonical `resource` (token audience) — AS
+ * metadata (RFC 8414) does not carry it. We locate the PRM document via the
+ * `WWW-Authenticate: resource_metadata="…"` challenge, falling back to the
+ * well-known PRM locations (path-aware, then origin-rooted). Returns null when no
+ * PRM document resolves.
+ */
+async function fetchProtectedResourceMetadata(
+  serverUrl: string
+): Promise<ProtectedResourceMetadata | null> {
   let origin: string
   try {
     origin = new URL(serverUrl).origin
   } catch {
-    origin = base
+    origin = serverUrl.replace(/\/$/, '')
   }
 
-  // Step 1: Try well-known candidates for the server URL (RFC 8414 + OIDC, path-aware).
-  for (const url of wellKnownCandidates(serverUrl)) {
-    const meta = await fetchAsMetadata(url)
-    if (meta) return meta
-  }
-
-  // Step 2: Protected-resource-metadata path (RFC 9728 / MCP auth).
+  // Prefer the PRM URL advertised in the resource's WWW-Authenticate challenge.
+  let prmUrl: string | null = null
   try {
-    // 2a. Fetch the resource URL itself to get the WWW-Authenticate header.
-    let prmUrl: string | null = null
-    try {
-      const resourceRes = await fetch(serverUrl, {
-        method: 'GET',
-        headers: { Accept: '*/*' },
-        signal: AbortSignal.timeout(5000),
-      })
-      const wwwAuth = resourceRes.headers.get('www-authenticate') ?? resourceRes.headers.get('WWW-Authenticate')
-      if (wwwAuth) {
-        const match = /resource_metadata="([^"]+)"/.exec(wwwAuth)
-        if (match) {
-          prmUrl = match[1]
-        }
-      }
-    } catch {
-      // network failure for resource fetch — proceed to fallback PRM URL
-    }
-
-    // Fall back to well-known PRM locations if no explicit URL was advertised.
-    // Try the path-aware location first (RFC 9728), then origin-rooted.
-    const path = (() => { try { return new URL(serverUrl).pathname.replace(/\/+$/, '') } catch { return '' } })()
-    const prmCandidates = prmUrl
-      ? [prmUrl]
-      : [
-          ...(path && path !== '/' ? [`${origin}/.well-known/oauth-protected-resource${path}`] : []),
-          `${origin}/.well-known/oauth-protected-resource`,
-        ]
-
-    // 2b. Fetch the first PRM document that resolves.
-    for (const candidate of prmCandidates) {
-      const prmRes = await fetch(candidate, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000) })
-      if (!prmRes.ok) continue
-      const prmData = (await prmRes.json()) as Record<string, unknown>
-      // The PRM `resource` field is the authoritative canonical resource identifier
-      // (RFC 9728) — prefer it over anything the AS metadata echoes.
-      const prmResource = typeof prmData.resource === 'string' ? prmData.resource : undefined
-      const authorizationServers = Array.isArray(prmData.authorization_servers)
-        ? (prmData.authorization_servers as unknown[])
-        : []
-      if (authorizationServers.length > 0 && typeof authorizationServers[0] === 'string') {
-        // 2c. Try AS well-known candidates (RFC 8414 + OIDC, path-aware).
-        for (const url of wellKnownCandidates(authorizationServers[0] as string)) {
-          const meta = await fetchAsMetadata(url)
-          if (meta) return { ...meta, resource: prmResource ?? meta.resource }
-        }
-      }
+    const resourceRes = await fetch(serverUrl, {
+      method: 'GET',
+      headers: { Accept: '*/*' },
+      signal: AbortSignal.timeout(5000),
+    })
+    const wwwAuth =
+      resourceRes.headers.get('www-authenticate') ?? resourceRes.headers.get('WWW-Authenticate')
+    if (wwwAuth) {
+      const match = /resource_metadata="([^"]+)"/.exec(wwwAuth)
+      if (match) prmUrl = match[1]
     }
   } catch {
-    // PRM path failed entirely — fall through to error
+    // network failure for resource fetch — proceed to well-known fallbacks
+  }
+
+  const path = (() => {
+    try {
+      return new URL(serverUrl).pathname.replace(/\/+$/, '')
+    } catch {
+      return ''
+    }
+  })()
+  const prmCandidates = prmUrl
+    ? [prmUrl]
+    : [
+        ...(path && path !== '/' ? [`${origin}/.well-known/oauth-protected-resource${path}`] : []),
+        `${origin}/.well-known/oauth-protected-resource`,
+      ]
+
+  for (const candidate of prmCandidates) {
+    try {
+      const prmRes = await fetch(candidate, {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(5000),
+      })
+      if (!prmRes.ok) continue
+      const prmData = (await prmRes.json()) as Record<string, unknown>
+      const resource = typeof prmData.resource === 'string' ? prmData.resource : undefined
+      const authorizationServers = Array.isArray(prmData.authorization_servers)
+        ? (prmData.authorization_servers as unknown[]).filter((s): s is string => typeof s === 'string')
+        : []
+      return { resource, authorizationServers }
+    } catch {
+      // try the next candidate
+    }
+  }
+  return null
+}
+
+export async function discoverOAuthEndpoints(serverUrl: string): Promise<OAuthServerMetadata> {
+  // Step 1: AS well-known (RFC 8414 + OIDC, path-aware) — the fast path for
+  // path-scoped servers like Datadog's /v1/mcp.
+  for (const url of wellKnownCandidates(serverUrl)) {
+    const meta = await fetchAsMetadata(url)
+    if (meta) {
+      // Always resolve the canonical `resource` from PRM (RFC 9728), even though
+      // AS metadata was found here — AS metadata almost never carries `resource`,
+      // and minting a token bound to the wrong audience (the bare server URL)
+      // makes spec-compliant servers (Linear, Sentry) 401 on every call.
+      const prm = await fetchProtectedResourceMetadata(serverUrl)
+      return { ...meta, resource: prm?.resource ?? meta.resource }
+    }
+  }
+
+  // Step 2: PRM-driven discovery — the server only advertises its AS via PRM.
+  const prm = await fetchProtectedResourceMetadata(serverUrl)
+  if (prm && prm.authorizationServers.length > 0) {
+    for (const asUrl of prm.authorizationServers) {
+      for (const url of wellKnownCandidates(asUrl)) {
+        const meta = await fetchAsMetadata(url)
+        if (meta) return { ...meta, resource: prm.resource ?? meta.resource }
+      }
+    }
   }
 
   throw new Error(
@@ -211,7 +244,14 @@ function cachedClientIsUsable(
   oauthConfig: McpOAuthConfig | undefined,
   redirectUri: string
 ): boolean {
-  if (oauthConfig?.clientId) return cached.clientId === oauthConfig.clientId
+  if (oauthConfig?.clientId) {
+    if (cached.clientId !== oauthConfig.clientId) return false
+    // Even for a manually-configured client, don't reuse it against a redirect_uri
+    // it wasn't registered with when we have a recorded one to compare — a stale
+    // redirect is what triggers "Mismatching redirect URI" at the token step.
+    if (cached.redirectUri != null) return cached.redirectUri === redirectUri
+    return true
+  }
   if (cached.redirectUri != null) return cached.redirectUri === redirectUri
   const uris = registeredRedirectUris(cached)
   if (uris == null) return false
@@ -235,19 +275,28 @@ export async function ensureRegisteredClient(
 ): Promise<McpOAuthClient> {
   const cached = await getClient(serverUrl)
   if (cached && cachedClientIsUsable(cached, oauthConfig, redirectUri)) {
-    if (cached.resource && cached.redirectUri) return cached
-    // Reusable but predates the resource/redirectUri columns — backfill in place.
+    // Self-heal the resource in place (no re-registration, so no DCR rate-limit
+    // hit): fill it when missing, AND correct it when it's the bare serverUrl
+    // fallback left by rows created before canonical PRM discovery existed — that
+    // wrong audience is what made Linear/Sentry 401 on every call. Once healed to
+    // the canonical value (e.g. …/mcp), it no longer equals serverUrl, so later
+    // reconnects skip re-discovery.
     let resource = cached.resource
-    if (!resource) {
+    if (!resource || resource === serverUrl) {
       try {
-        resource = (await discoverOAuthEndpoints(serverUrl)).resource ?? serverUrl
+        const discovered = (await discoverOAuthEndpoints(serverUrl)).resource
+        resource = discovered ?? resource ?? serverUrl
       } catch {
-        resource = serverUrl
+        resource = resource ?? serverUrl
       }
     }
-    const backfilled: McpOAuthClient = { ...cached, resource, redirectUri: cached.redirectUri ?? redirectUri }
-    await saveClient(backfilled)
-    return backfilled
+    const redirectUriToUse = cached.redirectUri ?? redirectUri
+    if (resource === cached.resource && redirectUriToUse === cached.redirectUri) {
+      return cached
+    }
+    const updated: McpOAuthClient = { ...cached, resource, redirectUri: redirectUriToUse }
+    await saveClient(updated)
+    return updated
   }
 
   const metadata = await discoverOAuthEndpoints(serverUrl)

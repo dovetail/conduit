@@ -15,6 +15,7 @@ import { listRuns, updateRun, getOrphanedRuns } from '../main/db/queries/runs'
 import { startRunServer, stopRun } from './runner'
 import {
   listGlobalMcps,
+  getGlobalMcp,
   createGlobalMcp,
   updateGlobalMcp,
   deleteGlobalMcp,
@@ -57,7 +58,8 @@ import { Octokit } from '@octokit/rest'
 import { createSession, sendMessageServer, closeSession } from './promptChatServer'
 import { loadIpRestrictionsConfig, isIpAllowed, extractClientIp } from './ipRestrictions'
 import { createIpRestrictionMiddleware } from './middleware/ipRestriction'
-import { isAuthEnabled, DEV_CONTEXT } from './auth/config'
+import { isAuthEnabled, DEV_CONTEXT, DEV_USER_ID } from './auth/config'
+import { ClientError, isClientError } from './errors'
 import { sessionMiddleware } from './auth/middleware'
 import { authRouter as authRoutes } from './auth/routes'
 import { ensureDevUser, getDevContext } from './auth/devBypass'
@@ -273,7 +275,7 @@ const handlers: Record<string, HandlerFn> = {
     ),
   'globalMcps:update': async ([id, data], _ws, ctx) => {
     if (!(await canAccessEntity('globalMcpServer', id as string, ctx.userId, ctx.userGroupIds))) {
-      throw new Error('Access denied')
+      throw new ClientError('Access denied')
     }
     return Promise.resolve(
       updateGlobalMcp(
@@ -283,10 +285,20 @@ const handlers: Record<string, HandlerFn> = {
     )
   },
   'globalMcps:delete': async ([id], _ws, ctx) => {
-    if (!(await isEntityOwner('globalMcpServer', id as string, ctx.userId))) {
-      throw new Error('Only the owner can delete this MCP server')
+    const existing = await getGlobalMcp(id as string)
+    if (!existing) throw new ClientError('MCP server not found')
+    // Legacy single-user-mode globals have no real owner (null owner_id, or the
+    // synthetic dev user). They're org-wide by nature (shared with everyone), so
+    // any authenticated user may remove them; otherwise deletion is owner-only.
+    const isLegacyGlobal = existing.ownerId == null || existing.ownerId === DEV_USER_ID
+    if (
+      !isLegacyGlobal &&
+      !(await isEntityOwner('globalMcpServer', id as string, ctx.userId))
+    ) {
+      throw new ClientError('Only the owner can delete this MCP server')
     }
-    await deleteGlobalMcp(id as string)
+    const deleted = await deleteGlobalMcp(id as string)
+    if (deleted === 0) throw new ClientError('MCP server not found')
     return Promise.resolve()
   },
 
@@ -689,10 +701,14 @@ wss.on('connection', (ws, req) => {
       const result = await handler(msg.args ?? [], ws, context)
       ws.send(JSON.stringify({ type: 'response', id: msg.id, result }))
     } catch (err: unknown) {
-      reporter.captureException(err, {
-        tags: { channel: msg.channel },
-        user: contextToReporterUser(context),
-      })
+      // Expected business-rule rejections (access denied, not found, validation)
+      // are surfaced to the client but not reported as faults — they're normal.
+      if (!isClientError(err)) {
+        reporter.captureException(err, {
+          tags: { channel: msg.channel },
+          user: contextToReporterUser(context),
+        })
+      }
       const message = err instanceof Error ? err.message : String(err)
       ws.send(JSON.stringify({ type: 'error', id: msg.id, error: message }))
     }
@@ -806,6 +822,19 @@ async function start(): Promise<void> {
         })
         .catch((err) => console.error('[server] Session cleanup failed:', err))
     }, 60 * 60 * 1000)
+  }
+
+  // MCP OAuth redirect URIs must be byte-stable across the register→authorize→token
+  // steps or providers reject them ("Mismatching redirect URI" — e.g. Datadog).
+  // Without CONDUIT_BASE_URL the redirect is derived from the (variable) browser
+  // origin, which breaks behind a load balancer / multiple hostnames. Warn loudly
+  // in deployed (auth-enabled) mode so it isn't silently misconfigured.
+  if (isAuthEnabled() && !process.env.CONDUIT_BASE_URL) {
+    console.warn(
+      '[conduit] WARNING: CONDUIT_BASE_URL is not set. MCP OAuth redirect URIs will be ' +
+        'derived from the browser origin and may be unstable, causing "Mismatching redirect URI" ' +
+        'errors (e.g. Datadog). Set CONDUIT_BASE_URL to the public base URL in production.'
+    )
   }
 
   httpServer.listen(PORT, () => {

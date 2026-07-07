@@ -45,7 +45,6 @@ export function parseReporterConfig(env: NodeJS.ProcessEnv): string[] {
   }
 
   if (unknown.length > 0) {
-    // eslint-disable-next-line no-console
     console.warn(
       `[observability] Ignoring unknown error reporter(s): ${unknown.join(', ')}. ` +
         `Known reporters: ${KNOWN_REPORTERS.join(', ')}.`
@@ -54,7 +53,6 @@ export function parseReporterConfig(env: NodeJS.ProcessEnv): string[] {
 
   // sentry is meaningless without a DSN — drop it rather than init a dead client.
   if (known.includes('sentry') && !hasDsn) {
-    // eslint-disable-next-line no-console
     console.warn('[observability] "sentry" reporter requested but SENTRY_DSN is unset — skipping it.')
     return known.filter((n) => n !== 'sentry')
   }

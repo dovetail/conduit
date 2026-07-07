@@ -66,7 +66,6 @@ export class CompositeReporter implements ErrorReporter {
         op(child)
       } catch (err) {
         // Never let one provider's failure break the others.
-        // eslint-disable-next-line no-console
         console.error(`[observability] reporter "${child.name}" threw:`, err)
       }
     }
@@ -94,7 +93,6 @@ export class CompositeReporter implements ErrorReporter {
         try {
           return await c.flush(timeoutMs)
         } catch (err) {
-          // eslint-disable-next-line no-console
           console.error(`[observability] reporter "${c.name}" flush threw:`, err)
           return false
         }
@@ -183,7 +181,6 @@ export function createConsoleReporter(): ErrorReporter {
       ...(ctx?.extra ? { extra: ctx.extra } : {}),
       ...(user ? { user } : {}),
     }
-    // eslint-disable-next-line no-console
     console[method](JSON.stringify(line))
   }
 
@@ -206,7 +203,6 @@ export function createConsoleReporter(): ErrorReporter {
     },
 
     addBreadcrumb(breadcrumb: Breadcrumb): void {
-      // eslint-disable-next-line no-console
       console.log(JSON.stringify({ source: 'observability', type: 'breadcrumb', ...breadcrumb }))
     },
 

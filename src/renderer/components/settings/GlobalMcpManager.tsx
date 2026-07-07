@@ -16,6 +16,7 @@ import {
 import { useMcpHealth } from '@renderer/hooks/useMcpHealth'
 import { useMcpTools } from '@renderer/hooks/useMcpTools'
 import { useAuth } from '@renderer/contexts/AuthContext'
+import { useToast } from '@renderer/contexts/ToastContext'
 import { cn } from '@renderer/lib/utils'
 import { McpOAuthButton } from './McpOAuthButton'
 import { useMcpOAuthProbe } from '@renderer/hooks/useMcpOAuth'
@@ -420,12 +421,20 @@ function ServerRow({ server, isDark, isOwner, onShare }: ServerRowProps) {
   const [editing, setEditing] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
+  const toast = useToast()
   const updateMcp = useUpdateGlobalMcp()
   const deleteMcp = useDeleteGlobalMcp()
   const probe = useMcpOAuthProbe(server.serverConfig)
 
   const handleToggle = () => {
-    updateMcp.mutate({ id: server.id, data: { enabled: !server.enabled } })
+    updateMcp.mutate(
+      { id: server.id, data: { enabled: !server.enabled } },
+      {
+        onError: (err) => {
+          toast.error(err instanceof Error ? err.message : String(err))
+        },
+      }
+    )
   }
 
   const handleSave = (form: FormState, parsedConfig: McpServerEntry) => {
@@ -453,7 +462,17 @@ function ServerRow({ server, isDark, isOwner, onShare }: ServerRowProps) {
       setConfirmDelete(true)
       return
     }
-    deleteMcp.mutate(server.id)
+    deleteMcp.mutate(server.id, {
+      onSuccess: () => {
+        toast.success('MCP server deleted')
+      },
+      onError: (err) => {
+        // The mutation rejects with `new Error(msg.error)` (see ws-client), so the
+        // server's message (e.g. "Only the owner can delete this MCP server") is
+        // surfaced verbatim.
+        toast.error(err instanceof Error ? err.message : String(err))
+      },
+    })
   }
 
   const serverType = getServerType(server.serverConfig)

@@ -129,10 +129,8 @@ export function TerminalPane({ runId, logEntries, height }: TerminalPaneProps) {
   useEffect(() => {
     if (!runId || !termRef.current) return
 
-    // If we switched runs, clear the terminal
-    if (currentModeRef.current !== null || true) {
-      termRef.current.clear()
-    }
+    // Clear the terminal whenever the live subscription (re)binds to a run.
+    termRef.current.clear()
     currentModeRef.current = 'live'
 
     const unsub = api.onOutput((payload) => {
