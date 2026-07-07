@@ -7,6 +7,7 @@ export interface PendingAuth {
   clientSecret?: string
   redirectUri: string
   tokenEndpoint: string
+  resource?: string
   createdAt: number
 }
 

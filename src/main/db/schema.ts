@@ -74,6 +74,11 @@ export const mcpOAuthClients = pgTable('mcp_oauth_clients', {
   clientSecretEnc: text('client_secret_enc'),      // encrypted; null for public clients
   authorizationEndpoint: text('authorization_endpoint').notNull(),
   tokenEndpoint: text('token_endpoint').notNull(),
+  // Canonical MCP resource URI (RFC 8707 / RFC 9728). Sent as the `resource`
+  // indicator on auth + token requests so the issued token is audience-bound to
+  // the MCP server. Discovered from protected-resource / AS metadata; falls back
+  // to the server URL.
+  resource: text('resource'),
   registrationData: text('registration_data'),     // raw DCR response JSON
   createdAt: bigint('created_at', { mode: 'number' }).notNull(),
   updatedAt: bigint('updated_at', { mode: 'number' }).notNull(),

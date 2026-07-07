@@ -14,7 +14,7 @@ vi.mock('../../main/db/queries/access', () => ({
   isEntityOwner: vi.fn(async () => true),
 }))
 vi.mock('./discovery', () => ({
-  ensureRegisteredClient: vi.fn(async (url: string) => ({ serverUrl: url, clientId: 'cid', authorizationEndpoint: 'https://as/a', tokenEndpoint: 'https://as/t' })),
+  ensureRegisteredClient: vi.fn(async (url: string) => ({ serverUrl: url, clientId: 'cid', authorizationEndpoint: 'https://as/a', tokenEndpoint: 'https://as/t', resource: 'https://mcp.linear.app/mcp' })),
 }))
 vi.mock('../../main/db/queries/oauthTokens', () => ({
   getTokenStatus: vi.fn(async () => ({ connected: true, scope: 'global', connectedByUserId: 'u1', connectedByName: 'Ada' })),
@@ -24,7 +24,7 @@ vi.mock('../../main/db/queries/oauthTokens', () => ({
 }))
 vi.mock('./flow', async (orig) => ({ ...(await orig() as any), exchangeCode: vi.fn(async () => ({ serverUrl: 'https://mcp.linear.app', accessToken: 'AT', tokenType: 'Bearer' })) }))
 
-import { startAuth, getStatus, resolveServerTarget, revoke } from './service'
+import { startAuth, getStatus, resolveServerTarget, revoke, getRedirectUri } from './service'
 import { canAccessEntity, isEntityOwner } from '../../main/db/queries/access'
 import { getConnectedByUserId } from '../../main/db/queries/oauthTokens'
 
@@ -50,6 +50,26 @@ describe('service', () => {
     const u = new URL(authUrl)
     expect(u.searchParams.get('client_id')).toBe('cid')
     expect(u.searchParams.get('code_challenge_method')).toBe('S256')
+  })
+
+  it('startAuth includes the resource indicator from the registered client', async () => {
+    const { authUrl } = await startAuth('g1', true, 'u1')
+    expect(new URL(authUrl).searchParams.get('resource')).toBe('https://mcp.linear.app/mcp')
+  })
+
+  it('getRedirectUri prefers CONDUIT_BASE_URL over the browser origin (stable value for DCR)', () => {
+    process.env.CONDUIT_BASE_URL = 'https://conduit.example.com'
+    expect(getRedirectUri('https://some-other-origin.test')).toBe('https://conduit.example.com/mcp/oauth/callback')
+  })
+
+  it('getRedirectUri strips a trailing slash on CONDUIT_BASE_URL', () => {
+    process.env.CONDUIT_BASE_URL = 'https://conduit.example.com/'
+    expect(getRedirectUri()).toBe('https://conduit.example.com/mcp/oauth/callback')
+  })
+
+  it('getRedirectUri falls back to the browser origin when CONDUIT_BASE_URL is unset', () => {
+    delete process.env.CONDUIT_BASE_URL
+    expect(getRedirectUri('https://console.host')).toBe('https://console.host/mcp/oauth/callback')
   })
 
   it('getStatus returns redacted status', async () => {

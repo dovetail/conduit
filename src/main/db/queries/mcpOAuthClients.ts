@@ -9,6 +9,8 @@ export interface McpOAuthClient {
   clientSecret?: string
   authorizationEndpoint: string
   tokenEndpoint: string
+  /** Canonical MCP resource URI (RFC 8707) sent as the `resource` indicator. */
+  resource?: string
   registrationData?: string
 }
 
@@ -19,6 +21,7 @@ function rowToClient(row: typeof mcpOAuthClients.$inferSelect): McpOAuthClient {
     clientSecret: row.clientSecretEnc ? decryptSecret(row.clientSecretEnc) : undefined,
     authorizationEndpoint: row.authorizationEndpoint,
     tokenEndpoint: row.tokenEndpoint,
+    resource: row.resource ?? undefined,
     registrationData: row.registrationData ?? undefined,
   }
 }
@@ -37,6 +40,7 @@ export async function saveClient(client: McpOAuthClient): Promise<void> {
     clientSecretEnc: client.clientSecret ? encryptSecret(client.clientSecret) : null,
     authorizationEndpoint: client.authorizationEndpoint,
     tokenEndpoint: client.tokenEndpoint,
+    resource: client.resource ?? null,
     registrationData: client.registrationData ?? null,
     createdAt: now,
     updatedAt: now,
@@ -48,6 +52,7 @@ export async function saveClient(client: McpOAuthClient): Promise<void> {
       clientSecretEnc: values.clientSecretEnc,
       authorizationEndpoint: values.authorizationEndpoint,
       tokenEndpoint: values.tokenEndpoint,
+      resource: values.resource,
       registrationData: values.registrationData,
       updatedAt: now,
     },

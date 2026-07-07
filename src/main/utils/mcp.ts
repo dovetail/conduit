@@ -42,6 +42,7 @@ async function resolveValidToken(url: string, owner: string): Promise<OAuthToken
       clientId: client.clientId,
       clientSecret: client.clientSecret,
       refreshToken: token.refreshToken,
+      resource: client.resource,
     })
     await saveToken(refreshed, owner, null)
     return refreshed

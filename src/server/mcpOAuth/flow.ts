@@ -14,6 +14,7 @@ export function buildAuthorizationUrl(a: {
   scopes: string[]
   state: string
   challenge: string
+  resource?: string
 }): string {
   const url = new URL(a.authorizationEndpoint)
   url.searchParams.set('response_type', 'code')
@@ -23,6 +24,11 @@ export function buildAuthorizationUrl(a: {
   url.searchParams.set('state', a.state)
   url.searchParams.set('code_challenge', a.challenge)
   url.searchParams.set('code_challenge_method', 'S256')
+  // RFC 8707 resource indicator — binds the issued token's audience to the MCP
+  // server. MCP servers that implement the 2025 auth spec (e.g. Linear) reject
+  // tokens whose audience is not the resource, so the handshake succeeds but every
+  // subsequent request 401s. Must match the value sent at token exchange.
+  if (a.resource) url.searchParams.set('resource', a.resource)
   return url.toString()
 }
 
@@ -49,7 +55,7 @@ async function postToken(tokenEndpoint: string, params: URLSearchParams): Promis
 
 export async function exchangeCode(a: {
   serverUrl: string; tokenEndpoint: string; clientId: string; clientSecret?: string
-  code: string; redirectUri: string; verifier: string
+  code: string; redirectUri: string; verifier: string; resource?: string
 }): Promise<OAuthToken> {
   const params = new URLSearchParams({
     grant_type: 'authorization_code',
@@ -59,11 +65,13 @@ export async function exchangeCode(a: {
     code_verifier: a.verifier,
   })
   if (a.clientSecret) params.set('client_secret', a.clientSecret)
+  // RFC 8707 — must match the resource sent in the authorization request.
+  if (a.resource) params.set('resource', a.resource)
   return tokenResponseToOAuthToken(a.serverUrl, await postToken(a.tokenEndpoint, params))
 }
 
 export async function refreshAccessToken(a: {
-  serverUrl: string; tokenEndpoint: string; clientId: string; clientSecret?: string; refreshToken: string
+  serverUrl: string; tokenEndpoint: string; clientId: string; clientSecret?: string; refreshToken: string; resource?: string
 }): Promise<OAuthToken> {
   const params = new URLSearchParams({
     grant_type: 'refresh_token',
@@ -71,6 +79,8 @@ export async function refreshAccessToken(a: {
     client_id: a.clientId,
   })
   if (a.clientSecret) params.set('client_secret', a.clientSecret)
+  // RFC 8707 — keep the refreshed token audience-bound to the same resource.
+  if (a.resource) params.set('resource', a.resource)
   const tok = tokenResponseToOAuthToken(a.serverUrl, await postToken(a.tokenEndpoint, params))
   // Some providers omit refresh_token on refresh — preserve the previous one.
   if (!tok.refreshToken) tok.refreshToken = a.refreshToken

@@ -6,6 +6,12 @@ export interface OAuthServerMetadata {
   authorization_endpoint: string
   token_endpoint: string
   registration_endpoint?: string
+  /**
+   * Canonical MCP resource URI (RFC 8707). Sourced from the protected-resource
+   * metadata `resource` field (RFC 9728) or echoed by the AS metadata. Passed as
+   * the `resource` indicator on auth + token requests.
+   */
+  resource?: string
 }
 
 /**
@@ -53,6 +59,7 @@ async function fetchAsMetadata(metadataUrl: string): Promise<OAuthServerMetadata
         token_endpoint: data.token_endpoint,
         registration_endpoint:
           typeof data.registration_endpoint === 'string' ? data.registration_endpoint : undefined,
+        resource: typeof data.resource === 'string' ? data.resource : undefined,
       }
     }
     return null
@@ -113,6 +120,9 @@ export async function discoverOAuthEndpoints(serverUrl: string): Promise<OAuthSe
       const prmRes = await fetch(candidate, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(5000) })
       if (!prmRes.ok) continue
       const prmData = (await prmRes.json()) as Record<string, unknown>
+      // The PRM `resource` field is the authoritative canonical resource identifier
+      // (RFC 9728) — prefer it over anything the AS metadata echoes.
+      const prmResource = typeof prmData.resource === 'string' ? prmData.resource : undefined
       const authorizationServers = Array.isArray(prmData.authorization_servers)
         ? (prmData.authorization_servers as unknown[])
         : []
@@ -120,7 +130,7 @@ export async function discoverOAuthEndpoints(serverUrl: string): Promise<OAuthSe
         // 2c. Try AS well-known candidates (RFC 8414 + OIDC, path-aware).
         for (const url of wellKnownCandidates(authorizationServers[0] as string)) {
           const meta = await fetchAsMetadata(url)
-          if (meta) return meta
+          if (meta) return { ...meta, resource: prmResource ?? meta.resource }
         }
       }
     }
@@ -169,8 +179,37 @@ async function registerClient(
 }
 
 /**
+ * Whether a cached client's registered `redirect_uris` include the given URI.
+ *
+ * OAuth providers validate the request's `redirect_uri` against exactly the set
+ * registered for the client (Sentry rejects at authorize; Datadog, being OAuth
+ * 2.1, at the token step — "Mismatching redirect URI"). When the DCR response
+ * didn't echo `redirect_uris`, or there's no registration data at all (e.g. a
+ * manually configured `clientId`), we can't tell — so we assume it's fine rather
+ * than needlessly re-registering (some providers rate-limit DCR, e.g. Datadog at
+ * 10/60s).
+ */
+function clientAcceptsRedirect(client: McpOAuthClient, redirectUri: string): boolean {
+  if (!client.registrationData) return true
+  try {
+    const data = JSON.parse(client.registrationData) as Record<string, unknown>
+    const uris = data.redirect_uris
+    if (!Array.isArray(uris)) return true
+    return uris.includes(redirectUri)
+  } catch {
+    return true
+  }
+}
+
+/**
  * Return a usable OAuth client for the MCP server, registering (DCR) and caching
  * one if none exists. Falls back to a manually configured clientId.
+ *
+ * A cached client is reused only when its registered `redirect_uris` accept the
+ * current `redirectUri`; otherwise it's stale (registered against an earlier
+ * origin / redirect URI) and would be rejected by the provider, so we re-register
+ * against the current one. A cached client that predates the `resource` column is
+ * backfilled in place (no re-registration).
  */
 export async function ensureRegisteredClient(
   serverUrl: string,
@@ -178,7 +217,19 @@ export async function ensureRegisteredClient(
   redirectUri: string
 ): Promise<McpOAuthClient> {
   const cached = await getClient(serverUrl)
-  if (cached) return cached
+  if (cached && clientAcceptsRedirect(cached, redirectUri)) {
+    if (cached.resource) return cached
+    // Valid for this redirect URI but predates the resource column — backfill the
+    // resource without re-registering (avoids hitting DCR rate limits).
+    try {
+      const metadata = await discoverOAuthEndpoints(serverUrl)
+      const withResource: McpOAuthClient = { ...cached, resource: metadata.resource ?? serverUrl }
+      await saveClient(withResource)
+      return withResource
+    } catch {
+      return { ...cached, resource: serverUrl }
+    }
+  }
 
   const metadata = await discoverOAuthEndpoints(serverUrl)
 
@@ -205,6 +256,7 @@ export async function ensureRegisteredClient(
     clientSecret,
     authorizationEndpoint: oauthConfig?.authorizationUrl || metadata.authorization_endpoint,
     tokenEndpoint: oauthConfig?.tokenUrl || metadata.token_endpoint,
+    resource: metadata.resource ?? serverUrl,
     registrationData,
   }
   await saveClient(client)

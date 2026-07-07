@@ -12,12 +12,21 @@ import { isUrlMcpServer } from '../../shared/mcp'
 const GLOBAL_OWNER = '__global__'
 
 /**
- * Build the OAuth callback URL. Prefer the origin the browser is actually using
- * (passed from the client) so the redirect returns to the same host the console
- * was opened on, falling back to CONDUIT_BASE_URL then localhost.
+ * Build the OAuth callback URL. This MUST be a single, stable value per
+ * deployment: OAuth providers register it at DCR time and then reject any auth /
+ * token request whose `redirect_uri` isn't byte-identical (Sentry → "Invalid
+ * redirect URI"; Datadog, OAuth 2.1 → "Mismatching redirect URI").
+ *
+ * So `CONDUIT_BASE_URL` (the canonical public URL) takes precedence — it does not
+ * vary with how the user reached the console. The browser origin is only a
+ * fallback for local dev where `CONDUIT_BASE_URL` is unset (there it equals
+ * `http://localhost:7456`), and localhost is the last resort.
+ *
+ * Production MUST set `CONDUIT_BASE_URL` to the public hostname; otherwise a user
+ * on a different origin would derive a different redirect URI and break DCR.
  */
 export function getRedirectUri(origin?: string): string {
-  const raw = origin?.trim() || process.env.CONDUIT_BASE_URL || 'http://localhost:7456'
+  const raw = process.env.CONDUIT_BASE_URL || origin?.trim() || 'http://localhost:7456'
   const base = raw.replace(/\/$/, '')
   return `${base}/mcp/oauth/callback`
 }
@@ -69,6 +78,7 @@ export async function startAuth(serverId: string, isGlobal: boolean, userId: str
     clientSecret: client.clientSecret,
     redirectUri,
     tokenEndpoint: client.tokenEndpoint,
+    resource: client.resource,
     createdAt: Date.now(),
   })
   const authUrl = buildAuthorizationUrl({
@@ -78,6 +88,7 @@ export async function startAuth(serverId: string, isGlobal: boolean, userId: str
     scopes: t.oauthConfig?.scopes ?? [],
     state,
     challenge,
+    resource: client.resource,
   })
   return { authUrl }
 }
@@ -142,6 +153,7 @@ export async function handleCallback(query: Record<string, string | undefined>):
       code,
       redirectUri: pending.redirectUri,
       verifier: pending.codeVerifier,
+      resource: pending.resource,
     })
     await saveToken(token, pending.tokenOwner, pending.connectedByUserId)
     return { ok: true, serverUrl: pending.serverUrl }

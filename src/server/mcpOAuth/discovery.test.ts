@@ -84,4 +84,80 @@ describe('discovery', () => {
     )
     expect(client.clientId).toBe('manual-1')
   })
+
+  it('captures the resource indicator from AS metadata', async () => {
+    const withResource = { ...meta, resource: 'https://mcp.example.com/mcp' }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) =>
+      url.includes('oauth-authorization-server')
+        ? { ok: true, json: async () => withResource }
+        : { ok: false }
+    ))
+    const m = await discoverOAuthEndpoints('https://mcp.example.com')
+    expect(m.resource).toBe('https://mcp.example.com/mcp')
+  })
+
+  it('stores a resource on the registered client (falls back to the server URL)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('.well-known')) return { ok: true, json: async () => meta } as any
+      if (url === meta.registration_endpoint) return { ok: true, json: async () => ({ client_id: 'dcr-r' }) } as any
+      return { ok: false } as any
+    }))
+    const client = await ensureRegisteredClient('https://mcp.example.com', undefined, 'http://localhost:7456/mcp/oauth/callback')
+    expect(client.resource).toBe('https://mcp.example.com')
+  })
+
+  it('re-registers when the cached client was registered for a different redirect URI', async () => {
+    clients.set('https://mcp.example.com', {
+      serverUrl: 'https://mcp.example.com', clientId: 'old',
+      authorizationEndpoint: meta.authorization_endpoint, tokenEndpoint: meta.token_endpoint,
+      registrationData: JSON.stringify({ client_id: 'old', redirect_uris: ['https://origin-a.test/mcp/oauth/callback'] }),
+      resource: 'https://mcp.example.com',
+    })
+    let registered = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: any) => {
+      if (url.includes('.well-known')) return { ok: true, json: async () => meta } as any
+      if (url === meta.registration_endpoint) {
+        registered++
+        const b = JSON.parse(init.body)
+        return { ok: true, json: async () => ({ client_id: 'new', redirect_uris: b.redirect_uris }) } as any
+      }
+      return { ok: false } as any
+    }))
+    const client = await ensureRegisteredClient('https://mcp.example.com', undefined, 'https://origin-b.test/mcp/oauth/callback')
+    expect(registered).toBe(1)
+    expect(client.clientId).toBe('new')
+  })
+
+  it('reuses the cached client when the current redirect URI is already registered', async () => {
+    clients.set('https://mcp.example.com', {
+      serverUrl: 'https://mcp.example.com', clientId: 'keep',
+      authorizationEndpoint: meta.authorization_endpoint, tokenEndpoint: meta.token_endpoint,
+      registrationData: JSON.stringify({ client_id: 'keep', redirect_uris: ['https://origin-a.test/mcp/oauth/callback'] }),
+      resource: 'https://mcp.example.com',
+    })
+    const fetchSpy = vi.fn(async () => ({ ok: false }) as any)
+    vi.stubGlobal('fetch', fetchSpy)
+    const client = await ensureRegisteredClient('https://mcp.example.com', undefined, 'https://origin-a.test/mcp/oauth/callback')
+    expect(client.clientId).toBe('keep')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('backfills a missing resource on a cached client without re-registering', async () => {
+    clients.set('https://mcp.example.com', {
+      serverUrl: 'https://mcp.example.com', clientId: 'keep',
+      authorizationEndpoint: meta.authorization_endpoint, tokenEndpoint: meta.token_endpoint,
+      registrationData: JSON.stringify({ client_id: 'keep', redirect_uris: ['https://origin-a.test/mcp/oauth/callback'] }),
+      // no resource — simulates a row created before the resource column existed
+    })
+    let registered = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('.well-known')) return { ok: true, json: async () => ({ ...meta, resource: 'https://mcp.example.com/mcp' }) } as any
+      if (url === meta.registration_endpoint) { registered++; return { ok: true, json: async () => ({ client_id: 'x' }) } as any }
+      return { ok: false } as any
+    }))
+    const client = await ensureRegisteredClient('https://mcp.example.com', undefined, 'https://origin-a.test/mcp/oauth/callback')
+    expect(client.resource).toBe('https://mcp.example.com/mcp')
+    expect(client.clientId).toBe('keep')
+    expect(registered).toBe(0)
+  })
 })

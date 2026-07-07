@@ -82,6 +82,10 @@ MCP servers that require OAuth use **server-mode OAuth 2.0 + PKCE** — Conduit 
 
 **Discovery & registration**: Conduit attempts RFC 7591 Dynamic Client Registration (DCR) via the server's `/.well-known/oauth-authorization-server` or `/.well-known/openid-configuration` metadata document. If the server does not support DCR, fall back to a manually configured `clientId` stored in `mcp_oauth_clients`.
 
+**Redirect URI (must be stable)**: `getRedirectUri` returns `${CONDUIT_BASE_URL}/mcp/oauth/callback` and **prefers `CONDUIT_BASE_URL`** over the browser origin — the redirect URI registered at DCR time must be byte-identical to the one sent on every later auth/token request, or providers reject it (Sentry → "Invalid redirect URI"; Datadog, OAuth 2.1 → "Mismatching redirect URI"). **Production must set `CONDUIT_BASE_URL`** to the canonical public URL. `ensureRegisteredClient` reuses a cached client only when its registered `redirect_uris` (parsed from `registrationData`) accept the current redirect URI; otherwise it re-registers (self-heals rows registered against a stale origin).
+
+**Resource indicator (RFC 8707)**: `mcp_oauth_clients.resource` holds the canonical MCP resource URI, discovered from the protected-resource metadata `resource` field (RFC 9728) or the AS metadata, falling back to the server URL. It is sent as the `resource` param on the authorization request, the token exchange, **and** refreshes so the issued token is audience-bound to the MCP server. Omitting it makes spec-compliant servers (e.g. Linear) return `401 invalid_token` on every call even though the handshake succeeds. **Existing tokens obtained before this must be re-authenticated** to pick up the audience binding.
+
 **Token ownership**:
 - Per-agent MCPs: tokens are scoped to the acting user (`tokenOwner = userId`).
 - Global MCPs: tokens are shared under `tokenOwner = '__global__'`. The UI shows which user first connected ("Connected by …") so operators know whose credential is in use.
