@@ -5,7 +5,7 @@
 // The renderer's maps are handled separately by @sentry/vite-plugin (which also
 // deletes them after upload so they aren't served) — this script deliberately
 // targets only the server output dirs.
-import SentryCli from '@sentry/cli'
+import { SentryCli } from '@sentry/cli'
 
 const token = process.env.SENTRY_AUTH_TOKEN
 const org = process.env.SENTRY_ORG
@@ -24,15 +24,15 @@ if (!release) {
 }
 
 // sentry-cli reads SENTRY_AUTH_TOKEN / SENTRY_ORG / SENTRY_PROJECT from the env.
-const cli = new SentryCli()
 const paths = ['out/server', 'out/main', 'out/shared']
 
 try {
+  const cli = new SentryCli()
   await cli.execute(['sourcemaps', 'inject', ...paths], true)
   await cli.execute(['sourcemaps', 'upload', '--release', release, ...paths], true)
   console.log(`[sourcemaps] Uploaded server source maps for release ${release}.`)
 } catch (err) {
-  // Don't fail the whole build if upload fails (e.g. transient network) — the
+  // Never fail the build over source maps (transient network, CLI hiccup) — the
   // app still ships; traces just won't be symbolicated for this release.
   console.error('[sourcemaps] Server source-map upload failed:', err)
   process.exit(0)
