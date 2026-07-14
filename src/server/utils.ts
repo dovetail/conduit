@@ -2,6 +2,8 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { LOGS_DIR } from '../main/utils/paths'
 import { isRunEvent } from '../shared/runEvents'
+import { getRunEvents } from '../main/db/queries/runEvents'
+import { reporter } from './observability'
 import type { LogEntry, RunLog } from '../shared/types'
 
 /** Parse a run's JSONL log into raw objects, skipping blank/malformed lines. */
@@ -42,10 +44,22 @@ export function runLogFromRows(rows: unknown[]): RunLog {
 }
 
 /**
- * Read a run's log, tagged by format so the client can pick a renderer. A
- * missing log is reported as an empty events log.
+ * Read a run's log, tagged by format so the client can pick a renderer.
+ *
+ * Prefers the RDS `run_events` store (P3 change D) so any control-plane replica
+ * can serve any run's log — removing the pod-local `/data/logs/<runId>.jsonl`
+ * coupling. Falls back to the on-disk JSONL for runs that predate `run_events`
+ * (historical runs, or a run whose events never reached RDS), so no history is
+ * lost. A missing log is reported as an empty events log.
  */
-export function readRunLog(runId: string): RunLog {
+export async function readRunLog(runId: string): Promise<RunLog> {
+  try {
+    const events = await getRunEvents(runId)
+    if (events.length > 0) return { format: 'events', events }
+  } catch (err) {
+    // RDS unavailable/transient — fall through to the on-disk log rather than fail.
+    reporter.captureException(err, { tags: { component: 'utils', op: 'readRunEvents', runId } })
+  }
   return runLogFromRows(readRawLines(runId))
 }
 
@@ -59,8 +73,8 @@ function stripAnsi(text: string): string {
  * falling back to raw stdout/system text; for old terminal logs it's the
  * ANSI-stripped stdout — matching the pre-structured behaviour.
  */
-export function readRunOutputText(runId: string): string {
-  const log = readRunLog(runId)
+export async function readRunOutputText(runId: string): Promise<string> {
+  const log = await readRunLog(runId)
   if (log.format === 'events') {
     const assistant = log.events
       .filter((e) => e.kind === 'assistant' && e.text)

@@ -245,6 +245,10 @@ export async function initDb(): Promise<void> {
     ALTER TABLE repositories ADD COLUMN IF NOT EXISTS commit_author_email TEXT;
     ALTER TABLE runs ADD COLUMN IF NOT EXISTS started_by TEXT;
     ALTER TABLE runs ADD COLUMN IF NOT EXISTS last_line TEXT;
+    -- Execution-split columns (P3): how/where a run executes + its liveness heartbeat.
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS executor TEXT;
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS pod_name TEXT;
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS heartbeat_at BIGINT;
     ALTER TABLE oauth_tokens ADD COLUMN IF NOT EXISTS token_owner TEXT NOT NULL DEFAULT '__global__';
     ALTER TABLE oauth_tokens ADD COLUMN IF NOT EXISTS connected_by_user_id TEXT;
 
@@ -285,6 +289,18 @@ export async function initDb(): Promise<void> {
       data_enc TEXT NOT NULL,
       created_at BIGINT NOT NULL
     );
+
+    -- Append-only structured run-event log (P3 eventing contract). seq is a
+    -- globally-monotonic ordering key; a run's events read back in seq order.
+    -- This is the RDS event bus + durable log store that replaces the pod-local
+    -- /data/logs/runId.jsonl coupling for live streaming and runs:getLog.
+    CREATE TABLE IF NOT EXISTS run_events (
+      seq BIGSERIAL PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      event_json TEXT NOT NULL,
+      created_at BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS run_events_run_id_seq_idx ON run_events (run_id, seq);
   `)
 
   // Guarded primary-key swap for oauth_tokens: drop the old single-column PK
@@ -345,6 +361,15 @@ export async function closeDb(): Promise<void> {
 export function getDb(): NodePgDatabase<typeof schema> {
   if (!drizzleDb) throw new Error('Database not initialized. Call initDb() first.')
   return drizzleDb
+}
+
+// The raw connection pool. Needed by the run-event bus, which holds a dedicated
+// connection open for Postgres LISTEN/NOTIFY (drizzle has no LISTEN API). Reusing
+// the pool means the listener inherits the pool's auth (incl. RDS-IAM token
+// refresh) rather than managing its own credential.
+export function getPool(): Pool {
+  if (!pool) throw new Error('Database not initialized. Call initDb() first.')
+  return pool
 }
 
 // Escape hatch for the handful of dynamic queries (visibility UNIONs) that are

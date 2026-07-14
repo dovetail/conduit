@@ -1,10 +1,12 @@
 import { spawn, ChildProcess } from 'child_process'
 import { createInterface } from 'readline'
 import * as fs from 'fs'
+import * as os from 'os'
 import * as path from 'path'
 import type { ExecutionRun, RunEvent, RunEventInit, TriggerContext, RunnerType } from '../shared/types'
 import { summarizeEvent } from '../shared/runEvents'
-import { createRun, updateRun } from '../main/db/queries/runs'
+import { createRun, updateRun, hasActiveRunForAgent } from '../main/db/queries/runs'
+import { appendRunEvents } from '../main/db/queries/runEvents'
 import { getAgent } from '../main/db/queries/agents'
 import { getRepository } from '../main/db/queries/repositories'
 import { getCredentialValue } from '../main/db/queries/agentCredentials'
@@ -24,9 +26,12 @@ import { buildCursorArgs, CURSOR_NOTICE } from '../main/execution/adapters/curso
 import { publishRunResult } from './publisher'
 import { buildTriggeredPrompt } from './triggers/promptBuilder'
 import { reporter } from './observability'
+import { getExecutorKind, JobExecutor, type Executor, type PreparedRun } from './executor'
 
-/** Function signature for broadcasting events to all connected WebSocket clients */
-export type BroadcastFn = (channel: string, payload: unknown) => void
+/** Function signature for broadcasting events to all connected WebSocket clients.
+ *  Re-exported from ./executor so existing importers (e.g. repoSync) keep working. */
+export type { BroadcastFn } from './executor'
+import type { BroadcastFn } from './executor'
 
 /** Environment variable each runner reads its API key/token from. */
 const RUNNER_ENV_VAR: Record<string, string> = {
@@ -82,18 +87,12 @@ interface ActiveRun {
   agentId: string
 }
 
-// Active child processes keyed by runId
+// Active child processes keyed by runId. Pod-local by design: it tracks the
+// child processes *this* pod owns, so the data-dir sweeper never reaps a live
+// run's worktree (worktrees are pod-local). The per-agent concurrency guard is
+// NOT read from here anymore — it moved to RDS (hasActiveRunForAgent) so it is
+// correct across pods.
 const activeProcesses = new Map<string, ActiveRun>()
-
-/** Whether an agent already has a run executing on this pod. One streaming run
- *  per agent at a time: a second concurrent run would double the (multi-GB)
- *  worktree footprint and race the same workspace. */
-export function hasActiveRunForAgent(agentId: string): boolean {
-  for (const r of activeProcesses.values()) {
-    if (r.agentId === agentId) return true
-  }
-  return false
-}
 
 /** Workspace dirs of runs currently executing on this pod. The data-dir sweeper
  *  treats these as protected — never sweeps a live run's worktree/workspace. */
@@ -107,6 +106,13 @@ export function getActiveWorkspacePaths(): Set<string> {
  *  like MCP config, whose names embed the runId). */
 export function getActiveRunIds(): Set<string> {
   return new Set(activeProcesses.keys())
+}
+
+/** Identifier of the pod/host executing runs, recorded on each run row for
+ *  observability + (later) Job supervision. K8s sets the pod's hostname to the
+ *  pod name; `CONDUIT_POD_NAME` (e.g. from the downward API) overrides it. */
+function getPodName(): string {
+  return process.env.CONDUIT_POD_NAME || os.hostname()
 }
 
 // Hook invoked after each run reaches a terminal state and has been removed from
@@ -129,12 +135,12 @@ function notifyRunFinalized(): void {
  *  and release file handles before we delete the directory. */
 const WORKSPACE_CLEANUP_DELAY_MS = 30_000
 
-/** Per-run cap on the on-disk log file (`logs/<runId>.jsonl`). A runaway run —
- *  e.g. one looping and spewing output — could otherwise write gigabytes that the
- *  data-dir sweeper never reclaims (run logs are history, not swept until they
- *  age out). Past the cap we stop persisting to disk (writing one truncation
- *  marker); live streaming to the UI and stdout log-forwarding continue. `0`
- *  disables the cap. */
+/** Per-run cap on the on-disk log file (`logs/<runId>.jsonl`) AND the RDS
+ *  `run_events` mirror. A runaway run — e.g. one looping and spewing output —
+ *  could otherwise write gigabytes that the data-dir sweeper never reclaims (run
+ *  logs are history, not swept until they age out). Past the cap we stop
+ *  persisting (writing one truncation marker); live streaming to the UI and
+ *  stdout log-forwarding continue. `0` disables the cap. */
 const RUN_LOG_MAX_BYTES = (() => {
   const n = Number(process.env.CONDUIT_RUN_LOG_MAX_BYTES)
   return Number.isFinite(n) && n >= 0 ? n : 500 * 1024 * 1024 // 500 MB
@@ -192,26 +198,31 @@ function cleanupRun(
 }
 
 /**
- * Start an agent run in server mode.
+ * Setup phase of a run (P3 change A). Loads the agent, enforces the per-agent
+ * concurrency guard, resolves the workspace (repo worktree > fixed dir >
+ * ephemeral), inserts the `runs` row, and writes the per-run MCP config. Returns
+ * everything the execute phase needs. This work is identical regardless of where
+ * the run then executes (in-process, or — later — a Kubernetes Job).
  *
- * Identical logic to src/main/execution/runner.ts startRun(), but uses the
- * provided `broadcast` function to push events to WebSocket clients instead
- * of mainWindow.webContents.send().
+ * Errors surface to the caller exactly as before: a missing agent, an
+ * already-running agent, an unready repository, or a failed worktree/MCP-config
+ * step throws (with the run row marked failed + logged for the MCP-config case).
  */
-export async function startRunServer(
+export async function prepareRun(
   agentId: string,
   broadcast: BroadcastFn,
   triggerContext?: TriggerContext,
   startedBy?: string
-): Promise<ExecutionRun> {
+): Promise<PreparedRun> {
   // 1. Load agent
   const agent = await getAgent(agentId)
   if (!agent) throw new Error(`Agent ${agentId} not found`)
 
   // One live run per agent: reject a second concurrent start rather than spin up
-  // another multi-GB worktree racing the same agent. (Cursor "launches" don't stay
-  // in the active set, so they're unaffected.)
-  if (hasActiveRunForAgent(agentId)) {
+  // another multi-GB worktree racing the same agent. Backed by RDS so the guard
+  // is correct across pods. (Cursor "launches" settle to 'launched', so they're
+  // unaffected.)
+  if (await hasActiveRunForAgent(agentId)) {
     throw new Error(
       `Agent "${agent.name || agentId}" already has a run in progress. ` +
         `Stop it before starting another.`
@@ -223,7 +234,7 @@ export async function startRunServer(
   let isEphemeral: boolean
   let worktreeClonePath: string | undefined
   // Set when push-credential resolution failed; surfaced into the run log once
-  // the log stream is open (see below), so a broken git token is never invisible.
+  // the log stream is open (see the executor), so a broken git token is never invisible.
   let pushCredentialError: string | undefined
 
   if (agent.repositoryId) {
@@ -241,8 +252,8 @@ export async function startRunServer(
     // Resolve push credentials first (non-throwing) so the token can be injected
     // into the worktree's origin below. A failed mint is recorded, not fatal — the
     // agent's later `git push` fails with an opaque credential error otherwise, so
-    // record why in both Sentry and the run log (the run-log line is emitted below,
-    // once the log stream is open).
+    // record why in both Sentry and the run log (the run-log line is emitted by the
+    // executor, once the log stream is open).
     const { token: pushToken, error: pushTokenError } = await resolvePushCredential(repo)
     if (pushTokenError) {
       pushCredentialError = pushTokenError.message
@@ -280,7 +291,8 @@ export async function startRunServer(
     isEphemeral = true
   }
 
-  // 4. Create run record (log path updated after we have the runId)
+  // 4. Create run record (log path updated after we have the runId). Record how
+  // and where the run is being executed so run coordination is multi-pod-safe.
   const runRecord = await createRun({
     agentId,
     status: 'running',
@@ -292,6 +304,9 @@ export async function startRunServer(
     durationMs: undefined,
     triggerContext: triggerContext ?? undefined,
     startedBy: startedBy ?? undefined,
+    executor: getExecutorKind(),
+    podName: getPodName(),
+    heartbeatAt: Date.now(),
   })
 
   const runId = runRecord.id
@@ -318,103 +333,175 @@ export async function startRunServer(
     throw err
   }
 
-  // 5. Open log file write stream
-  const logStream = fs.createWriteStream(realLogPath, { flags: 'a', encoding: 'utf8' })
+  return {
+    agent,
+    run,
+    runId,
+    workspacePath,
+    isEphemeral,
+    worktreeClonePath,
+    mcpConfigPath,
+    pushCredentialError,
+    triggerContext,
+    startedBy,
+  }
+}
 
-  // Bytes written to the on-disk log so far, and whether the cap has been hit.
-  let logBytesWritten = 0
-  let logCapped = false
+/**
+ * In-process executor (P3 change A): spawns the agent CLI as a child of the
+ * control-plane pod, streams its output into structured events, and finalizes the
+ * run. This is the original execution path — behaviour is unchanged — now behind
+ * the {@link Executor} seam so an out-of-process (Job) executor can replace it via
+ * `CONDUIT_EXECUTOR`. Events are streamed to WebSocket clients (as before) AND
+ * mirrored into the RDS `run_events` log (P3 change D) so any replica can serve
+ * `runs:getLog` without the pod-local `/data` coupling.
+ */
+export class InProcessExecutor implements Executor {
+  readonly kind = 'inproc' as const
 
-  // Persist one structured event to the run's log file (until the per-run size
-  // cap), then forward it to the platform log pipeline. New runs store RunEvents
-  // (one per NDJSON line); old runs' ANSI LogEntry logs still replay via the
-  // format-detecting reader.
-  function writeRunEvent(event: RunEvent): void {
-    const line = JSON.stringify(event)
-    if (!logCapped) {
-      logStream.write(line + '\n')
-      if (RUN_LOG_MAX_BYTES > 0) {
-        logBytesWritten += Buffer.byteLength(line) + 1
-        if (logBytesWritten >= RUN_LOG_MAX_BYTES) {
-          logCapped = true
-          logStream.write(
-            JSON.stringify({
-              t: Date.now(),
-              kind: 'raw',
-              stream: 'system',
-              text: `[Conduit: run log truncated on disk — exceeded ${RUN_LOG_MAX_BYTES}-byte cap. Live output continues.]`,
-            }) + '\n'
-          )
+  async execute(prepared: PreparedRun, broadcast: BroadcastFn): Promise<ExecutionRun> {
+    const {
+      agent,
+      run,
+      runId,
+      workspacePath,
+      isEphemeral,
+      worktreeClonePath,
+      mcpConfigPath,
+      pushCredentialError,
+      triggerContext,
+      startedBy,
+    } = prepared
+    const agentId = agent.id
+    const realLogPath = path.join(LOGS_DIR, `${runId}.jsonl`)
+
+    // 5. Open log file write stream
+    const logStream = fs.createWriteStream(realLogPath, { flags: 'a', encoding: 'utf8' })
+
+    // Bytes written to the on-disk log so far, and whether the cap has been hit.
+    let logBytesWritten = 0
+    let logCapped = false
+
+    // Persist one structured event to the run's log file (until the per-run size
+    // cap), then forward it to the platform log pipeline. New runs store RunEvents
+    // (one per NDJSON line); old runs' ANSI LogEntry logs still replay via the
+    // format-detecting reader.
+    function writeRunEvent(event: RunEvent): void {
+      const line = JSON.stringify(event)
+      if (!logCapped) {
+        logStream.write(line + '\n')
+        if (RUN_LOG_MAX_BYTES > 0) {
+          logBytesWritten += Buffer.byteLength(line) + 1
+          if (logBytesWritten >= RUN_LOG_MAX_BYTES) {
+            logCapped = true
+            logStream.write(
+              JSON.stringify({
+                t: Date.now(),
+                kind: 'raw',
+                stream: 'system',
+                text: `[Conduit: run log truncated on disk — exceeded ${RUN_LOG_MAX_BYTES}-byte cap. Live output continues.]`,
+              }) + '\n'
+            )
+          }
         }
       }
+      // Always emit to stdout so the platform log forwarder (Datadog, etc.) ingests.
+      process.stdout.write(JSON.stringify({ runId, agentId, ...event }) + '\n')
     }
-    // Always emit to stdout so the platform log forwarder (Datadog, etc.) ingests.
-    process.stdout.write(JSON.stringify({ runId, agentId, ...event }) + '\n')
-  }
 
-  // Last meaningful activity (plain text) for the runs-list excerpt / live label.
-  let lastLine = ''
-
-  // Buffer + flush structured events into batched WebSocket broadcasts.
-  const eventBuffer: RunEvent[] = []
-  let flushScheduled = false
-  function scheduleFlush(): void {
-    if (flushScheduled) return
-    flushScheduled = true
-    setImmediate(() => {
-      flushScheduled = false
-      if (eventBuffer.length > 0) {
-        const events = eventBuffer.splice(0)
-        broadcast('run:events', { runId, events })
+    // Mirror events into the RDS run_events log (P3 change D). Appends are
+    // serialized on a per-run chain so their `seq` matches emission order, and
+    // capped the same way as the on-disk log so a runaway run can't grow RDS
+    // unbounded. Failures are captured, never thrown on the hot path.
+    let rdsBytes = 0
+    let rdsCapped = false
+    let rdsChain: Promise<void> = Promise.resolve()
+    function persistEvents(events: RunEvent[]): void {
+      if (rdsCapped || events.length === 0) return
+      const toPersist = events.slice()
+      if (RUN_LOG_MAX_BYTES > 0) {
+        for (const ev of events) rdsBytes += Buffer.byteLength(JSON.stringify(ev)) + 1
+        if (rdsBytes >= RUN_LOG_MAX_BYTES) {
+          rdsCapped = true
+          toPersist.push({
+            t: Date.now(),
+            kind: 'raw',
+            stream: 'system',
+            text: `[Conduit: run log truncated in RDS — exceeded ${RUN_LOG_MAX_BYTES}-byte cap. Live output continues.]`,
+          })
+        }
       }
-    })
-  }
+      rdsChain = rdsChain
+        .then(() => appendRunEvents(runId, toPersist))
+        .catch((err) =>
+          reporter.captureException(err, { tags: { component: 'runner', op: 'appendRunEvents', runId } })
+        )
+    }
 
-  // Stamp, persist, summarize (for lastLine), and queue an event for broadcast.
-  function emitEvent(init: RunEventInit): void {
-    const event: RunEvent = { ...init, t: Date.now() }
-    writeRunEvent(event)
-    const summary = summarizeEvent(event)
-    if (summary) lastLine = summary.slice(0, 500)
-    eventBuffer.push(event)
-    scheduleFlush()
-  }
+    // Last meaningful activity (plain text) for the runs-list excerpt / live label.
+    let lastLine = ''
 
-  function emitSystemMessage(text: string): void {
-    emitEvent({ kind: 'raw', stream: 'system', text })
-  }
-
-  // Guard against double-finalization (e.g. stopRun + close event)
-  let finalized = false
-
-  async function finalizeRun(
-    status: 'completed' | 'failed' | 'stopped',
-    exitCode: number | null | undefined
-  ): Promise<void> {
-    if (finalized) return
-    finalized = true
-    activeProcesses.delete(runId)
-    cleanupRun(runId, workspacePath, isEphemeral, worktreeClonePath)
-
-    // Flush any remaining buffered events
-    if (eventBuffer.length > 0) {
+    // Buffer + flush structured events into batched WebSocket broadcasts, and
+    // mirror the same batch into RDS.
+    const eventBuffer: RunEvent[] = []
+    let flushScheduled = false
+    function flushBuffer(): void {
+      if (eventBuffer.length === 0) return
       const events = eventBuffer.splice(0)
       broadcast('run:events', { runId, events })
+      persistEvents(events)
+    }
+    function scheduleFlush(): void {
+      if (flushScheduled) return
+      flushScheduled = true
+      setImmediate(() => {
+        flushScheduled = false
+        flushBuffer()
+      })
     }
 
-    logStream.end()
+    // Stamp, persist, summarize (for lastLine), and queue an event for broadcast.
+    function emitEvent(init: RunEventInit): void {
+      const event: RunEvent = { ...init, t: Date.now() }
+      writeRunEvent(event)
+      const summary = summarizeEvent(event)
+      if (summary) lastLine = summary.slice(0, 500)
+      eventBuffer.push(event)
+      scheduleFlush()
+    }
 
-    const endedAt = Date.now()
-    const durationMs = endedAt - run.startedAt
+    function emitSystemMessage(text: string): void {
+      emitEvent({ kind: 'raw', stream: 'system', text })
+    }
 
-    const finalRun = await updateRun(runId, {
-      status,
-      endedAt,
-      durationMs,
-      exitCode: exitCode ?? undefined,
-      lastLine: lastLine || undefined,
-    })
-      .then((finalRun) => {
+    // Guard against double-finalization (e.g. stopRun + close event)
+    let finalized = false
+
+    async function finalizeRun(
+      status: 'completed' | 'failed' | 'stopped',
+      exitCode: number | null | undefined
+    ): Promise<void> {
+      if (finalized) return
+      finalized = true
+      activeProcesses.delete(runId)
+      cleanupRun(runId, workspacePath, isEphemeral, worktreeClonePath)
+
+      // Flush any remaining buffered events (broadcast + persist to RDS)
+      flushBuffer()
+
+      logStream.end()
+
+      const endedAt = Date.now()
+      const durationMs = endedAt - run.startedAt
+
+      try {
+        const finalRun = await updateRun(runId, {
+          status,
+          endedAt,
+          durationMs,
+          exitCode: exitCode ?? undefined,
+          lastLine: lastLine || undefined,
+        })
         broadcast('run:statusChange', {
           runId,
           status,
@@ -422,35 +509,100 @@ export async function startRunServer(
           endedAt,
           durationMs,
         })
-        return publishRunResult(agentId, finalRun)
-      })
-      .catch((err) => console.error(`[server/runner] Finalize failed for run ${runId}:`, err))
+        // Ensure all events are durably in RDS before the publisher reads them.
+        await rdsChain
+        await publishRunResult(agentId, finalRun)
+      } catch (err) {
+        console.error(`[server/runner] Finalize failed for run ${runId}:`, err)
+      }
 
-    // Reclaim disk promptly after every job finishes (see setRunFinalizedHook).
-    notifyRunFinalized()
-  }
+      // Reclaim disk promptly after every job finishes (see setRunFinalizedHook).
+      notifyRunFinalized()
+    }
 
-  // Surface a broken push credential into the run log so it's attributable at a
-  // glance, rather than only showing up later as an opaque `git push` failure.
-  if (pushCredentialError) {
-    emitSystemMessage(
-      `⚠️  Could not obtain GitHub push credentials for this repository: ${pushCredentialError}\n` +
-      `   The agent can read the code, but "git push" (and opening PRs) will fail. ` +
-      `Check the repository's authentication settings.`
-    )
-  }
+    // Surface a broken push credential into the run log so it's attributable at a
+    // glance, rather than only showing up later as an opaque `git push` failure.
+    if (pushCredentialError) {
+      emitSystemMessage(
+        `⚠️  Could not obtain GitHub push credentials for this repository: ${pushCredentialError}\n` +
+        `   The agent can read the code, but "git push" (and opening PRs) will fail. ` +
+        `Check the repository's authentication settings.`
+      )
+    }
 
-  // 6. Spawn process based on runner type
-  if (agent.runner === 'cursor') {
-    // Cursor: open workspace folder, no streaming
+    // 6. Spawn process based on runner type
+    if (agent.runner === 'cursor') {
+      // Cursor: open workspace folder, no streaming
+      let child: ChildProcess
+      try {
+        child = spawn('cursor', buildCursorArgs(workspacePath), {
+          detached: true,
+          stdio: 'ignore',
+          env: await buildRunnerEnv(agent, startedBy),
+        })
+        child.unref()
+      } catch (err) {
+        // Rethrown to the caller (WS 'runs:start' handler / triggerService), which
+        // reports it — capturing here too would double-report.
+        cleanupRun(runId, workspacePath, isEphemeral, worktreeClonePath)
+        logStream.end()
+        await updateRun(runId, { status: 'failed', endedAt: Date.now() })
+        broadcast('run:statusChange', { runId, status: 'failed' })
+        throw err
+      }
+
+      emitSystemMessage(CURSOR_NOTICE)
+
+      // Mark as launched (not completed — it's a GUI app)
+      activeProcesses.delete(runId)
+      cleanupRun(runId, workspacePath, isEphemeral, worktreeClonePath)
+      logStream.end()
+
+      const endedAt = Date.now()
+      const durationMs = endedAt - run.startedAt
+
+      const launchedRun = await updateRun(runId, { status: 'launched', endedAt, durationMs })
+
+      broadcast('run:statusChange', { runId, status: 'launched', endedAt, durationMs })
+
+      return launchedRun
+    }
+
+    // claude or amp
     let child: ChildProcess
     try {
-      child = spawn('cursor', buildCursorArgs(workspacePath), {
-        detached: true,
-        stdio: 'ignore',
-        env: await buildRunnerEnv(agent, startedBy),
+      const cliArgs =
+        agent.runner === 'amp'
+          ? buildAmpArgs(mcpConfigPath)
+          : buildClaudeArgs(mcpConfigPath, agent.effort, !agent.enableRepoMcps)
+
+      const binary = agent.runner === 'amp' ? 'amp' : 'claude'
+
+      const runnerEnv = await buildRunnerEnv(agent, startedBy)
+      if (agent.runner === 'claude') {
+        // Pre-trust the workspace so Claude honors the repo's .claude/settings.json
+        // instead of warning "this workspace has not been trusted" and dropping its
+        // permissions on every headless run. Trust both the workspace and the bare
+        // clone (Claude keys trust by the git root for a worktree).
+        const trusted = [workspacePath, worktreeClonePath].filter((p): p is string => !!p)
+        runnerEnv.CLAUDE_CONFIG_DIR = writeClaudeConfig(runId, trusted)
+      }
+
+      child = spawn(binary, cliArgs, {
+        cwd: workspacePath,
+        env: runnerEnv,
+        stdio: ['pipe', 'pipe', 'pipe'],
       })
-      child.unref()
+
+      // Write prompt to stdin — avoids --mcp-config <configs...> greedily
+      // consuming the prompt as an additional config path argument.
+      const fullPrompt = triggerContext
+        ? buildTriggeredPrompt(agent.prompt, triggerContext)
+        : agent.prompt
+      if (child.stdin) {
+        child.stdin.write(fullPrompt)
+        child.stdin.end()
+      }
     } catch (err) {
       // Rethrown to the caller (WS 'runs:start' handler / triggerService), which
       // reports it — capturing here too would double-report.
@@ -461,117 +613,79 @@ export async function startRunServer(
       throw err
     }
 
-    emitSystemMessage(CURSOR_NOTICE)
+    activeProcesses.set(runId, { child, finalize: finalizeRun, workspacePath, agentId })
 
-    // Mark as launched (not completed — it's a GUI app)
-    activeProcesses.delete(runId)
-    cleanupRun(runId, workspacePath, isEphemeral, worktreeClonePath)
-    logStream.end()
+    // Handle spawn errors (binary not in PATH, etc.)
+    child.on('error', (err) => {
+      console.error(`[server/runner] Spawn error for run ${runId}:`, err)
+      reporter.captureException(err, {
+        tags: { component: 'runner', runId, runner: agent.runner },
+      })
+      emitSystemMessage(`\n[Error: ${err.message}]\n`)
+      finalizeRun('failed', undefined)
+    })
 
-    const endedAt = Date.now()
-    const durationMs = endedAt - run.startedAt
+    // Readline on stdout for NDJSON parsing → structured events.
+    const parseEvents = agent.runner === 'amp' ? parseAmpEvents : parseClaudeEvents
 
-    const launchedRun = await updateRun(runId, { status: 'launched', endedAt, durationMs })
-
-    broadcast('run:statusChange', { runId, status: 'launched', endedAt, durationMs })
-
-    return launchedRun
-  }
-
-  // claude or amp
-  let child: ChildProcess
-  try {
-    const cliArgs =
-      agent.runner === 'amp'
-        ? buildAmpArgs(mcpConfigPath)
-        : buildClaudeArgs(mcpConfigPath, agent.effort, !agent.enableRepoMcps)
-
-    const binary = agent.runner === 'amp' ? 'amp' : 'claude'
-
-    const runnerEnv = await buildRunnerEnv(agent, startedBy)
-    if (agent.runner === 'claude') {
-      // Pre-trust the workspace so Claude honors the repo's .claude/settings.json
-      // instead of warning "this workspace has not been trusted" and dropping its
-      // permissions on every headless run. Trust both the workspace and the bare
-      // clone (Claude keys trust by the git root for a worktree).
-      const trusted = [workspacePath, worktreeClonePath].filter((p): p is string => !!p)
-      runnerEnv.CLAUDE_CONFIG_DIR = writeClaudeConfig(runId, trusted)
+    if (child.stdout) {
+      const rl = createInterface({ input: child.stdout, crlfDelay: Infinity })
+      rl.on('line', (line) => {
+        for (const ev of parseEvents(line)) emitEvent(ev)
+      })
     }
 
-    child = spawn(binary, cliArgs, {
-      cwd: workspacePath,
-      env: runnerEnv,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-
-    // Write prompt to stdin — avoids --mcp-config <configs...> greedily
-    // consuming the prompt as an additional config path argument.
-    const fullPrompt = triggerContext
-      ? buildTriggeredPrompt(agent.prompt, triggerContext)
-      : agent.prompt
-    if (child.stdin) {
-      child.stdin.write(fullPrompt)
-      child.stdin.end()
+    // Stderr: stream raw
+    if (child.stderr) {
+      child.stderr.on('data', (data: Buffer) => {
+        emitEvent({ kind: 'raw', stream: 'stderr', text: data.toString('utf8') })
+      })
     }
-  } catch (err) {
-    // Rethrown to the caller (WS 'runs:start' handler / triggerService), which
-    // reports it — capturing here too would double-report.
-    cleanupRun(runId, workspacePath, isEphemeral, worktreeClonePath)
-    logStream.end()
-    await updateRun(runId, { status: 'failed', endedAt: Date.now() })
-    broadcast('run:statusChange', { runId, status: 'failed' })
-    throw err
-  }
 
-  activeProcesses.set(runId, { child, finalize: finalizeRun, workspacePath, agentId })
-
-  // Handle spawn errors (binary not in PATH, etc.)
-  child.on('error', (err) => {
-    console.error(`[server/runner] Spawn error for run ${runId}:`, err)
-    reporter.captureException(err, {
-      tags: { component: 'runner', runId, runner: agent.runner },
+    // Process close
+    child.on('close', (code) => {
+      const status = code === 0 ? 'completed' : 'failed'
+      // Surface failed runs to the error reporter — a non-zero exit (or a process
+      // killed when the disk filled) was previously only written to the DB and
+      // never captured. Skip when already finalized: a spawn 'error' or an
+      // explicit stopRun has its own handling and would otherwise double-report.
+      if (status === 'failed' && !finalized) {
+        const report = buildRunFailureReport({ runId, runner: agent.runner, exitCode: code, lastLine })
+        reporter.captureMessage(report.message, report.level, report.ctx)
+      }
+      finalizeRun(status, code)
     })
-    emitSystemMessage(`\n[Error: ${err.message}]\n`)
-    finalizeRun('failed', undefined)
-  })
 
-  // Readline on stdout for NDJSON parsing → structured events.
-  const parseEvents = agent.runner === 'amp' ? parseAmpEvents : parseClaudeEvents
-
-  if (child.stdout) {
-    const rl = createInterface({ input: child.stdout, crlfDelay: Infinity })
-    rl.on('line', (line) => {
-      for (const ev of parseEvents(line)) emitEvent(ev)
-    })
+    return run
   }
+}
 
-  // Stderr: stream raw
-  if (child.stderr) {
-    child.stderr.on('data', (data: Buffer) => {
-      emitEvent({ kind: 'raw', stream: 'stderr', text: data.toString('utf8') })
-    })
-  }
+/** Construct the executor selected by `CONDUIT_EXECUTOR` (default `inproc`). */
+export function getExecutor(): Executor {
+  return getExecutorKind() === 'job' ? new JobExecutor() : new InProcessExecutor()
+}
 
-  // Process close
-  child.on('close', (code) => {
-    const status = code === 0 ? 'completed' : 'failed'
-    // Surface failed runs to the error reporter — a non-zero exit (or a process
-    // killed when the disk filled) was previously only written to the DB and
-    // never captured. Skip when already finalized: a spawn 'error' or an
-    // explicit stopRun has its own handling and would otherwise double-report.
-    if (status === 'failed' && !finalized) {
-      const report = buildRunFailureReport({ runId, runner: agent.runner, exitCode: code, lastLine })
-      reporter.captureMessage(report.message, report.level, report.ctx)
-    }
-    finalizeRun(status, code)
-  })
-
-  return run
+/**
+ * Start an agent run in server mode.
+ *
+ * Setup (agent load, guard, workspace/worktree, run row, MCP config) runs via
+ * {@link prepareRun}; execution (spawn/stream/finalize, or Job dispatch) runs via
+ * the {@link Executor} selected by `CONDUIT_EXECUTOR`. The default in-process path
+ * is behaviour-identical to the original single-function implementation.
+ */
+export async function startRunServer(
+  agentId: string,
+  broadcast: BroadcastFn,
+  triggerContext?: TriggerContext,
+  startedBy?: string
+): Promise<ExecutionRun> {
+  const prepared = await prepareRun(agentId, broadcast, triggerContext, startedBy)
+  return getExecutor().execute(prepared, broadcast)
 }
 
 /**
  * Stop a running agent process by sending SIGTERM.
- * Uses the finalize closure from startRunServer to ensure consistent cleanup.
+ * Uses the finalize closure from the in-process executor to ensure consistent cleanup.
  */
 export async function stopRun(runId: string): Promise<void> {
   const activeRun = activeProcesses.get(runId)

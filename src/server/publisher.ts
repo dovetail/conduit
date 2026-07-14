@@ -292,7 +292,7 @@ export async function publishRunResult(
 
   let fullStdout = ''
   try {
-    fullStdout = readRunOutputText(run.id)
+    fullStdout = await readRunOutputText(run.id)
   } catch {
     return
   }

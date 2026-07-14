@@ -1,4 +1,4 @@
-import { pgTable, text, bigint, boolean, primaryKey, uniqueIndex } from 'drizzle-orm/pg-core'
+import { pgTable, text, bigint, bigserial, boolean, primaryKey, uniqueIndex, index } from 'drizzle-orm/pg-core'
 
 // All timestamps are unix ms (bigint). Booleans are native pg booleans.
 // JSON-shaped columns remain TEXT (serialized) for simplicity; switch to
@@ -217,4 +217,28 @@ export const runs = pgTable('runs', {
   triggerContext: text('trigger_context'),
   startedBy: text('started_by'),
   lastLine: text('last_line'),
+  // Execution-split columns (P3). `executor` records how the run is executed
+  // ('inproc' | 'job'); `pod_name` identifies the pod that owns execution; and
+  // `heartbeat_at` carries the run's last liveness heartbeat. These move run
+  // coordination from an in-process Map onto RDS so it is multi-pod-safe.
+  executor: text('executor'),
+  podName: text('pod_name'),
+  heartbeatAt: bigint('heartbeat_at', { mode: 'number' }),
 })
+
+// Append-only structured run-event log (P3 eventing contract). Each row is one
+// RunEvent (serialized JSON), ordered by the monotonic `seq`. This is the RDS
+// event bus: a run's producer appends events here (and, for Job runs, issues
+// `NOTIFY run_events, '<runId>'`); the control-plane LISTENs and re-broadcasts to
+// its WebSocket clients, and `runs:getLog` reads from here — so any replica can
+// serve any run's log without the pod-local `/data/logs/<runId>.jsonl` coupling.
+export const runEvents = pgTable('run_events', {
+  // Globally-monotonic ordering key assigned by Postgres. Within a run the order
+  // of `seq` is the order events were appended.
+  seq: bigserial('seq', { mode: 'number' }).primaryKey(),
+  runId: text('run_id').notNull(),
+  eventJson: text('event_json').notNull(),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+}, (table) => ({
+  runSeqIdx: index('run_events_run_id_seq_idx').on(table.runId, table.seq),
+}))

@@ -1,7 +1,7 @@
-import { eq, desc } from 'drizzle-orm'
+import { eq, and, desc } from 'drizzle-orm'
 import { getDb } from '../index'
 import { runs } from '../schema'
-import type { ExecutionRun, RunStatus, TriggerContext } from '../../../shared/types'
+import type { ExecutionRun, RunExecutor, RunStatus, TriggerContext } from '../../../shared/types'
 
 function rowToExecutionRun(row: typeof runs.$inferSelect): ExecutionRun {
   return {
@@ -17,6 +17,9 @@ function rowToExecutionRun(row: typeof runs.$inferSelect): ExecutionRun {
     triggerContext: row.triggerContext ? JSON.parse(row.triggerContext) as TriggerContext : undefined,
     startedBy: row.startedBy ?? undefined,
     lastLine: row.lastLine ?? undefined,
+    executor: (row.executor as RunExecutor | null) ?? undefined,
+    podName: row.podName ?? undefined,
+    heartbeatAt: row.heartbeatAt ?? undefined,
   }
 }
 
@@ -52,6 +55,9 @@ export async function createRun(
     exitCode: data.exitCode ?? null,
     triggerContext: data.triggerContext ? JSON.stringify(data.triggerContext) : null,
     startedBy: data.startedBy ?? null,
+    executor: data.executor ?? null,
+    podName: data.podName ?? null,
+    heartbeatAt: data.heartbeatAt ?? null,
   })
 
   const created = await getRun(id)
@@ -74,6 +80,9 @@ export async function updateRun(
   if (data.logPath !== undefined) updateValues.logPath = data.logPath
   if ('exitCode' in data) updateValues.exitCode = data.exitCode ?? null
   if ('lastLine' in data) updateValues.lastLine = data.lastLine ?? null
+  if ('executor' in data) updateValues.executor = data.executor ?? null
+  if ('podName' in data) updateValues.podName = data.podName ?? null
+  if ('heartbeatAt' in data) updateValues.heartbeatAt = data.heartbeatAt ?? null
 
   await getDb().update(runs).set(updateValues).where(eq(runs.id, id))
 
@@ -88,4 +97,24 @@ export async function getOrphanedRuns(): Promise<ExecutionRun[]> {
     .from(runs)
     .where(eq(runs.status, 'running'))
   return rows.map(rowToExecutionRun)
+}
+
+/**
+ * Whether an agent already has a run in progress, asked of RDS rather than an
+ * in-process Map. This is the per-agent concurrency guard: one streaming run per
+ * agent at a time (a second concurrent run would double the multi-GB worktree
+ * footprint and race the same workspace). Backing it with RDS makes the guard
+ * correct across pods — a run executing on any pod (in-process or a Job) blocks a
+ * second start — instead of only seeing this pod's children. Crash-orphaned
+ * `running` rows are reconciled to `failed` on startup before runs are served, so
+ * they don't falsely block. Cursor launches settle to `launched`, so they don't
+ * count.
+ */
+export async function hasActiveRunForAgent(agentId: string): Promise<boolean> {
+  const rows = await getDb()
+    .select({ id: runs.id })
+    .from(runs)
+    .where(and(eq(runs.agentId, agentId), eq(runs.status, 'running')))
+    .limit(1)
+  return rows.length > 0
 }

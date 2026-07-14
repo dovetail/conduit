@@ -36,6 +36,7 @@ import {
   deleteRepository,
 } from '../main/db/queries/repositories'
 import { RepoSyncService } from './repoSync'
+import { RunEventBus } from './runEventBus'
 import { DataDirSweeper, sweepOnce, getStorageUsage } from './dataDirSweeper'
 import { encryptSecret } from './crypto'
 import { mintInstallationToken, resolveRepoToken } from './githubApp'
@@ -279,7 +280,7 @@ const handlers: Record<string, HandlerFn> = {
   'runs:list': ([agentId]) => Promise.resolve(listRuns(agentId as string)),
   'runs:start': ([agentId], _ws, ctx) => startRunServer(agentId as string, broadcast, undefined, ctx.userId),
   'runs:stop': ([runId]) => stopRun(runId as string),
-  'runs:getLog': ([runId]) => Promise.resolve(readRunLog(runId as string)),
+  'runs:getLog': ([runId]) => readRunLog(runId as string),
 
   // Global MCPs
   'globalMcps:list': (_args, _ws, ctx) => Promise.resolve(listGlobalMcps(ctx.userId, ctx.userGroupIds)),
@@ -869,6 +870,12 @@ const repoSyncService = new RepoSyncService(broadcast)
 // (orphaned worktrees, temp workspaces, MCP configs) and owns startup cleanup.
 const dataDirSweeper = new DataDirSweeper()
 
+// RDS run-event bus — LISTENs on Postgres NOTIFY and re-broadcasts a run-pod's
+// events to this replica's WebSocket clients (P3 eventing contract). Inert for
+// in-process runs (they broadcast directly and don't notify); wired now so
+// flipping CONDUIT_EXECUTOR=job needs no further control-plane changes.
+const runEventBus = new RunEventBus(broadcast)
+
 async function start(): Promise<void> {
   // Initialise the Postgres database (creates tables if they don't exist)
   await initDb()
@@ -929,6 +936,12 @@ async function start(): Promise<void> {
     )
   })
 
+  // Start the RDS run-event bus (LISTEN run_events → re-broadcast). Best-effort:
+  // it self-reconnects, so a transient DB hiccup here never blocks startup.
+  runEventBus.start().catch((err) =>
+    reporter.captureException(err, { tags: { component: 'runEventBus', op: 'start' } })
+  )
+
   // Sample memory pressure so an impending OOM — which kills the whole process
   // mid-run and leaves runs "quietly" dead — is surfaced as a warning + breadcrumbs
   // ahead of the kill, rather than only reconciled as failed on the next startup.
@@ -988,6 +1001,7 @@ async function start(): Promise<void> {
     triggerService.stop()
     repoSyncService.stop()
     dataDirSweeper.stop()
+    runEventBus.stop()
     stopMemoryMonitor()
     // Flush buffered error events so shutdown-time reports are delivered.
     await reporter.flush(2000).catch(() => {})

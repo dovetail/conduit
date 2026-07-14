@@ -148,6 +148,14 @@ export interface PromptChatSession {
 
 export type RunStatus = 'running' | 'completed' | 'failed' | 'stopped' | 'launched'
 
+/**
+ * How a run is executed. `inproc` spawns the agent CLI as a child process inside
+ * the control-plane pod (the original behaviour); `job` dispatches the run to an
+ * ephemeral Kubernetes Job (one pod per run) for per-run isolation. Selected by
+ * the `CONDUIT_EXECUTOR` env var, defaulting to `inproc`.
+ */
+export type RunExecutor = 'inproc' | 'job'
+
 export interface McpOAuthConfig {
   clientId: string
   authorizationUrl: string  // override discovery if known
@@ -248,6 +256,12 @@ export interface ExecutionRun {
   startedBy?: string
   /** Last non-empty output line of the run (ANSI-stripped), for a list excerpt. */
   lastLine?: string
+  /** Which executor ran (or is running) this run — `inproc` or `job`. */
+  executor?: RunExecutor
+  /** Name of the pod/host that owns this run's execution (observability + Job supervision). */
+  podName?: string
+  /** Unix ms of the run's last liveness heartbeat (set by the executing pod). */
+  heartbeatAt?: number
 }
 
 export interface LogEntry {
