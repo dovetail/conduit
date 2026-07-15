@@ -84,7 +84,6 @@ import type {
   AgentConfig,
   GlobalMcpServer,
   PublishTarget,
-  Repository,
   RepositoryInput,
   RepoTestConnectionInput,
   RunnerType,
