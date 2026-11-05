@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { installRepoCredentials, type RepoCredentials } from './repoCredentials'
+import { GH_TOKEN_FILE_ENV_VAR, installRepoCredentials, type RepoCredentials } from './repoCredentials'
 import { buildAuthUrl } from '../gitOps'
 
 const URL = 'https://github.com/acme/widgets.git'
@@ -74,6 +74,27 @@ describe('installRepoCredentials', () => {
     expect(runGh(c.env.PATH!)).toBe('ghs_old')
     await c.update('ghs_new')
     expect(runGh(c.env.PATH!)).toBe('ghs_new')
+  })
+
+  it('lets the image gh shim read the refreshed token after a login shell resets PATH', async () => {
+    const c = install({ PATH: fakeBin, GH_TOKEN: 'ghs_old' })
+    const tokenFile = c.env[GH_TOKEN_FILE_ENV_VAR]
+    expect(tokenFile).toBeDefined()
+    await c.update('ghs_new')
+
+    const shimDir = path.join(root, 'usr-local-bin')
+    fs.mkdirSync(shimDir)
+    const shim = fs
+      .readFileSync(path.join(__dirname, '../../../scripts/gh-token-shim.sh'), 'utf8')
+      .replace('exec /usr/bin/gh', `exec ${path.join(fakeBin, 'gh')}`)
+    fs.writeFileSync(path.join(shimDir, 'gh'), shim, { mode: 0o755 })
+
+    // The per-run wrapper dir is gone from PATH; only the env var survives.
+    const out = execFileSync('gh', [], {
+      encoding: 'utf8',
+      env: { PATH: shimDir, GH_TOKEN: 'ghs_old', [GH_TOKEN_FILE_ENV_VAR]: tokenFile },
+    }).trim()
+    expect(out).toBe('ghs_new')
   })
 
   it('does not front gh when the agent supplies its own GH_TOKEN', () => {

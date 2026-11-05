@@ -99,6 +99,10 @@ RUN mkdir -p -m 755 /etc/apt/keyrings && \
     # Fail the build loudly if `gh` ever fails to land on PATH.
     gh --version
 
+# Front the real gh so it reads the run's refreshed token (see the script).
+COPY --chmod=755 scripts/gh-token-shim.sh /usr/local/bin/gh
+RUN test "$(command -v gh)" = /usr/local/bin/gh && gh --version
+
 # Agent CLIs the runner shells out to. Without these the deployed host reports
 # every runner as "not installed" on the agent select screen and runs fail.
 #   - claude       → @anthropic-ai/claude-code (npm, bin: claude)

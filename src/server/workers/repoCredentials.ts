@@ -13,6 +13,12 @@ import { buildAuthUrl, runGit } from '../gitOps'
  * PATH that reads the token from a file on every invocation; `update` rewrites
  * that file and re-points `origin`. Only an `origin` still carrying the
  * previous token is touched, so an agent that re-points its remote keeps it.
+ *
+ * A login shell can drop the PATH prefix: cursor-agent snapshots its shell
+ * with `bash -ilc`, and Debian's /etc/profile resets PATH outright. The token
+ * file's path is therefore also exported as CONDUIT_GH_TOKEN_FILE, which
+ * survives that reset, for the image's /usr/local/bin/gh shim
+ * (scripts/gh-token-shim.sh) to read.
  */
 export interface RepoCredentials {
   /** Env entries to overlay on the spawned process (PATH with the gh wrapper). */
@@ -20,6 +26,8 @@ export interface RepoCredentials {
   update(token: string): Promise<void>
   dispose(): void
 }
+
+export const GH_TOKEN_FILE_ENV_VAR = 'CONDUIT_GH_TOKEN_FILE'
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
@@ -73,6 +81,7 @@ export function installRepoCredentials(opts: {
       { mode: 0o700 }
     )
     overlay.PATH = env.PATH ? `${binDir}${path.delimiter}${env.PATH}` : binDir
+    overlay[GH_TOKEN_FILE_ENV_VAR] = tokenPath
   }
 
   let current = repo.token
