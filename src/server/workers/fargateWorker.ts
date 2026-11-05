@@ -259,6 +259,8 @@ export class FargateWorkerFactory implements WorkerFactory {
   private readonly ecs: ECSClient
   /** In-flight runId → task ARN. Removed after STOPPED / not-found / accepted deprovision. */
   private readonly active = new Map<string, string>()
+  /** Runs whose worker has started execution; shutdown leaves these tasks running. */
+  private readonly started = new Set<string>()
   /** In-flight stop+verify promises, keyed by task ARN (idempotent). */
   private readonly stopping = new Map<string, Promise<void>>()
   private readonly stopAttempts: number
@@ -334,6 +336,7 @@ export class FargateWorkerFactory implements WorkerFactory {
 
     try {
       const handle = await this.assignWhenConnected(workerId, spec, wrappedSink, taskArn, runId)
+      if (this.active.has(runId) && !this.stopping.has(taskArn)) this.started.add(runId)
       return {
         ...handle,
         cancel: async () => {
@@ -422,6 +425,7 @@ export class FargateWorkerFactory implements WorkerFactory {
   }
 
   private async stopTask(taskArn: string, runId: string, reason: string): Promise<void> {
+    this.started.delete(runId)
     const existing = this.stopping.get(taskArn)
     if (existing) return existing
 
@@ -533,6 +537,7 @@ export class FargateWorkerFactory implements WorkerFactory {
 
   private forgetStopped(runId: string, taskArn: string): void {
     this.active.delete(runId)
+    this.started.delete(runId)
     this.failedStops.delete(runId)
     this.reportedStopFailures.delete(taskArn)
   }
@@ -589,6 +594,11 @@ export class FargateWorkerFactory implements WorkerFactory {
     }
   }
 
+  /**
+   * Stop tasks whose worker never started its run. Tasks already executing
+   * keep running: the worker reconnects to the replacement server, which
+   * adopts the run, and the task exits on its own once the run is delivered.
+   */
   async shutdown(): Promise<void> {
     if (this.uncleanTimer) {
       clearInterval(this.uncleanTimer)
@@ -596,14 +606,15 @@ export class FargateWorkerFactory implements WorkerFactory {
     }
     const deadline = Date.now() + this.shutdownDeadlineMs
     this.shutdownDeadlineAt = deadline
-    while (this.active.size > 0) {
-      const inflight = [...this.active.entries()]
+    const unstarted = () => [...this.active.entries()].filter(([runId]) => !this.started.has(runId))
+    while (unstarted().length > 0) {
       await Promise.allSettled(
-        inflight.map(([runId, taskArn]) => this.stopTask(taskArn, runId, 'factory shutdown'))
+        unstarted().map(([runId, taskArn]) => this.stopTask(taskArn, runId, 'factory shutdown'))
       )
-      if (this.active.size === 0) return
+      const remaining = unstarted().length
+      if (remaining === 0) return
       if (Date.now() >= deadline) {
-        throw new Error(`Failed to stop ${this.active.size} Fargate task(s) before shutdown deadline`)
+        throw new Error(`Failed to stop ${remaining} Fargate task(s) before shutdown deadline`)
       }
       await sleep(this.stopBackoffMs)
     }

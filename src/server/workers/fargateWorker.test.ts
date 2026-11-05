@@ -1304,10 +1304,18 @@ describe('FargateWorkerFactory', () => {
     expect(reporter.captureMessage).toHaveBeenCalledTimes(1)
   })
 
-  it('shutdown StopTasks every in-flight run and verifies STOPPED', async () => {
-    await factory.startRun(SPEC, sink)
+  it('shutdown StopTasks a run whose worker never connected and verifies STOPPED', async () => {
+    cp.assignTo.mockImplementation(() => new Promise(() => {}))
+    void factory.startRun(SPEC, sink).catch(() => {})
+    await vi.waitFor(() => expect(ecs.of('RunTaskCommand')).toHaveLength(1))
     await factory.shutdown()
     expect(ecs.of('StopTaskCommand')[0]).toMatchObject({ task: TASK_ARN })
-    expect(ecs.of('DescribeTasksCommand')[0]).toMatchObject({ tasks: [TASK_ARN] })
+    expect(ecs.of('DescribeTasksCommand').at(-1)).toMatchObject({ tasks: [TASK_ARN] })
+  })
+
+  it('shutdown leaves a started run’s task running for the replacement server', async () => {
+    await factory.startRun(SPEC, sink)
+    await factory.shutdown()
+    expect(ecs.of('StopTaskCommand')).toEqual([])
   })
 })

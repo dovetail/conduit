@@ -738,6 +738,21 @@ describe('WorkerControlPlane', () => {
     expect(handle.workspacePath).toBe('/tmp/fresh')
   }, 5_000)
 
+  it('stop leaves a started run for the replacement server instead of failing it', async () => {
+    const worker = await connectWorker(ctx)
+    const events: string[] = []
+    const onExit = vi.fn()
+    const handlePromise = ctx.controlPlane.assign(SPEC, { onEvent: (ev) => events.push(ev.text ?? ''), onExit })
+    await worker.next() // run:assign
+    worker.ws.send(JSON.stringify({ type: 'run:started', runId: SPEC.runId }))
+    await handlePromise
+    const closed = expectClose(worker.ws)
+    ctx.controlPlane.stop()
+    expect(await closed).toMatchObject({ code: 1001 })
+    expect(onExit).not.toHaveBeenCalled()
+    expect(events).toEqual([])
+  })
+
   it('rejects pending assignTo waiters when the control plane stops', async () => {
     const pending = ctx.controlPlane.assignTo('ghost', SPEC, { onEvent: () => {}, onExit: () => {} }, 2_000)
     ctx.controlPlane.stop()

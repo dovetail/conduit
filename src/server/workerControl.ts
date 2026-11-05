@@ -1340,6 +1340,12 @@ export class WorkerControlPlane {
     }
   }
 
+  /**
+   * Server shutdown. Runs not yet started fail. Started runs are left
+   * `running` in the database without touching their sinks: their workers
+   * reconnect to the replacement server, which adopts them from the durable
+   * cursor (or fails them once the reconnect window lapses).
+   */
   stop(): void {
     clearInterval(this.leaseTimer)
     for (const waiter of [...this.waiters.values()]) {
@@ -1355,12 +1361,9 @@ export class WorkerControlPlane {
       } else {
         clearTimeout(a.timeout)
         this.runs.delete(a.spec.runId)
-        a.sink.onEvent({
-          kind: 'raw',
-          stream: 'system',
-          text: `[Conduit: worker ${a.workerId} shutting down — failing this run.]`,
-        })
-        this.failSink(a, a.spec.runId)
+        console.log(
+          `[worker-control] Leaving run ${a.spec.runId} on worker ${a.workerId} for the replacement server`
+        )
       }
     }
     for (const w of this.workers.values()) {

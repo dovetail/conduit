@@ -134,10 +134,16 @@ up on schedule. One-shot (Fargate/EKS) workers do not exit after local process
 completion until `run:exit` is acknowledged. If the window expires, the worker
 cancels still-active execution and exits non-zero.
 
-**Graceful shutdown is not a delivery guarantee.** `SIGINT`/`SIGTERM` cancel
-active runs and exit; they do not wait for unacked frames to drain. During a
-rolling deploy of the *server*, in-flight remote runs survive because the worker
-reconnects to the replacement and replays from the durable cursor. A `SIGTERM`
+**Server shutdown hands runs over.** A graceful server `SIGTERM` fails only
+assignments that have not started; started remote/eks/fargate runs stay
+`running` in the database (`WorkerControlPlane.stop()` never touches their
+sinks) and the Fargate factory stops only tasks whose worker never started the
+run. During a rolling deploy of the *server*, in-flight remote runs therefore
+survive: the worker reconnects to the replacement and replays from the durable
+cursor.
+
+**Worker shutdown is not a delivery guarantee.** A worker's `SIGINT`/`SIGTERM`
+cancel active runs and exit; they do not wait for unacked frames to drain. A `SIGTERM`
 to the *worker* (pod eviction, spot reclaim, `docker stop`) ends its run: the
 spool is process-local, so anything unacked at that moment is lost and the run
 fails when the lease lapses. Drain worker pods by stopping new assignment and
