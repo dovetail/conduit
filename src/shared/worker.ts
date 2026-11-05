@@ -60,6 +60,13 @@ export interface RunSpec {
    * so a newer worker accepts a cursor RunSpec from an older server.
    */
   mcpConfigContent?: string
+  /**
+   * Keys of URL servers in mcpConfigContent whose Authorization header is a
+   * Conduit-managed OAuth bearer. The worker fronts them with a loopback relay
+   * so `updateMcpAuth` can swap in renewed tokens mid-run; workers that predate
+   * this field keep the launch-time bearer.
+   */
+  mcpOAuthServerKeys?: string[]
   /** claude only: --strict-mcp-config (ignore repo/host MCP configs). */
   strictMcpConfig?: boolean
   /**
@@ -104,6 +111,11 @@ export interface WorkerHandle {
    * after about an hour). Absent when the run has no tokenized checkout.
    */
   updateRepoToken?(token: string): Promise<void>
+  /**
+   * Swap in renewed Authorization values for the run's OAuth MCP servers,
+   * keyed by server key. Absent when the run has no relayed MCP servers.
+   */
+  updateMcpAuth?(auth: Record<string, string>): Promise<void>
 }
 
 /**

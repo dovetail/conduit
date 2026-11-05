@@ -427,6 +427,10 @@ function connect(): void {
       handles.get(msg.runId)?.updateRepoToken?.(msg.repoToken).catch((err) => {
         console.error(`[worker] Failed to refresh credentials for run ${msg.runId}:`, err)
       })
+    } else if (msg.type === 'run:mcpAuth') {
+      handles.get(msg.runId)?.updateMcpAuth?.(msg.auth).catch((err) => {
+        console.error(`[worker] Failed to refresh MCP credentials for run ${msg.runId}:`, err)
+      })
     } else if (msg.type === 'run:ack') {
       applyAck(msg.runId, msg.sequence)
     } else if (msg.type === 'run:resume') {

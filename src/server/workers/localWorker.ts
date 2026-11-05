@@ -6,6 +6,7 @@ import { writeMcpConfigContent, deleteMcpConfig } from '../../main/utils/mcpConf
 import { writeClaudeConfig, deleteClaudeConfig } from '../../main/utils/claudeConfig'
 import { installCursorMcpConfig } from './cursorMcpConfig'
 import { installRepoCredentials } from './repoCredentials'
+import { startMcpAuthRelay, type McpAuthRelay } from './mcpAuthRelay'
 import { createConfiguredWorktree, removeWorktree, runGit, buildAuthUrl, configureWorktreeGit, DEFAULT_GIT_TIMEOUT_MS } from '../gitOps'
 import { buildClaudeArgs, parseClaudeEvents } from '../../main/execution/adapters/claude'
 import { buildAmpArgs, parseAmpEvents } from '../../main/execution/adapters/amp'
@@ -77,11 +78,16 @@ export class LocalWorkerFactory implements WorkerFactory {
       })
     }
 
+    let relay: McpAuthRelay | undefined
     try {
-      return await this.spawn(spec, sink, workspacePath, worktreeClonePath, ephemeral)
+      if (spec.mcpConfigContent && spec.mcpOAuthServerKeys?.length) {
+        relay = await startMcpAuthRelay(spec.mcpConfigContent, spec.mcpOAuthServerKeys)
+      }
+      return await this.spawn(spec, sink, workspacePath, worktreeClonePath, ephemeral, relay)
     } catch (err) {
       // Roll back everything this factory created so a failed start never
       // orphans a multi-GB worktree or token-carrying config file.
+      void relay?.close()
       deleteMcpConfig(spec.runId)
       deleteClaudeConfig(spec.runId)
       try {
@@ -99,23 +105,25 @@ export class LocalWorkerFactory implements WorkerFactory {
     sink: WorkerEventSink,
     workspacePath: string,
     worktreeClonePath: string | undefined,
-    ephemeral: boolean
+    ephemeral: boolean,
+    relay: McpAuthRelay | undefined
   ): Promise<WorkerHandle> {
     // 2. Write the MCP config. Claude/Amp read it by path (--mcp-config);
     // cursor-agent has no such flag, so it is merged into the workspace's
     // .cursor/mcp.json instead and restored when the process exits.
+    const mcpConfigContent = relay?.content ?? spec.mcpConfigContent
     let mcpConfigPath: string | undefined
     let restoreCursorMcp: (() => Promise<void>) | undefined
     if (spec.runner === 'cursor') {
       // Absent only in a RunSpec from a pre-injection server.
-      if (spec.mcpConfigContent) {
-        restoreCursorMcp = await installCursorMcpConfig(workspacePath, spec.mcpConfigContent)
+      if (mcpConfigContent) {
+        restoreCursorMcp = await installCursorMcpConfig(workspacePath, mcpConfigContent)
       }
     } else {
-      if (!spec.mcpConfigContent) {
+      if (!mcpConfigContent) {
         throw new Error(`RunSpec for run ${spec.runId} is missing mcpConfigContent`)
       }
-      mcpConfigPath = writeMcpConfigContent(spec.runId, spec.mcpConfigContent)
+      mcpConfigPath = writeMcpConfigContent(spec.runId, mcpConfigContent)
     }
     const restoreWorkspaceMcp = async (): Promise<void> => {
       try {
@@ -123,6 +131,7 @@ export class LocalWorkerFactory implements WorkerFactory {
       } catch (err) {
         console.error(`[workers/local] Failed to restore .cursor/mcp.json for run ${spec.runId}:`, err)
       }
+      await relay?.close()
     }
 
     // 3. Environment: the worker's own env overlaid with the orchestrator-
@@ -197,6 +206,7 @@ export class LocalWorkerFactory implements WorkerFactory {
         }
       },
       updateRepoToken: repoCredentials ? (token) => repoCredentials.update(token) : undefined,
+      updateMcpAuth: relay ? async (auth) => relay.update(auth) : undefined,
     }
 
     // Spawn errors (binary not in PATH, etc.) — the orchestrator owns

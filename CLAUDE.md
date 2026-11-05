@@ -74,7 +74,9 @@ a per-run delivery sequence. Server→worker `run:assign` (RunSpec plus
 `run:resume` (replay from the durable cursor), `run:reject`, `run:cancel`,
 `run:credentials` (a freshly minted GitHub App token every 45 minutes; the
 worker re-points the checkout's tokenized `origin` and the `gh` wrapper it puts
-on PATH, since installation tokens expire after an hour — older workers ignore it).
+on PATH, since installation tokens expire after an hour — older workers ignore it),
+`run:mcpAuth` (renewed MCP OAuth bearers keyed by server key; see MCP OAuth
+run-time injection — older workers ignore it).
 
 The worker keeps every frame on a process-local spool until the matching
 contiguous sequence is ACKed, then resends later frames in order after
@@ -312,7 +314,9 @@ MCP servers that require OAuth use **server-mode OAuth 2.0 + PKCE** — Conduit 
 - `mcp:oauth:getStatus` — returns the current `McpOAuthStatus` (object with `connected: boolean`, `connectedByUserId?: string`, `connectedByName?: string`, `scope: 'user' | 'global'`, `expiresAt?: number`) for a given server URL + token owner.
 - `mcp:oauth:revoke` — deletes stored tokens for a given server URL + token owner.
 
-**Run-time injection**: `writeMcpConfig` (called when launching an agent run) reads the stored access token and injects an `Authorization: Bearer <token>` header into the MCP server configuration. Tokens are auto-refreshed before injection when a refresh token is available.
+**Run-time injection**: `buildRunMcpConfig` (called when launching an agent run) reads the stored access token and injects an `Authorization: Bearer <token>` header into the MCP server configuration. Tokens are auto-refreshed before injection when a refresh token is available.
+
+**Mid-run refresh**: some providers (Buildkite) issue hour-long access tokens, shorter than a long run, and the agent CLI reads its MCP config once. So the RunSpec lists OAuth-injected servers in `mcpOAuthServerKeys` (legacy `sse` excluded), and the worker fronts them with a loopback relay (`src/server/workers/mcpAuthRelay.ts`): the config the CLI sees points at `http://127.0.0.1:<port>/<key>` with a per-run random bearer, and the relay forwards each request upstream with the latest real token. The server re-resolves tokens every 5 minutes (`startMcpAuthRefresh` in `runner.ts`, renewing within 15 minutes of expiry) and sends only changed values through `handle.updateMcpAuth` (`run:mcpAuth` for remote workers). Older workers ignore the field and keep the launch-time bearer.
 
 **Files**:
 - `src/server/crypto.ts` — `encryptSecret` / `decryptSecret` (AES-256-GCM)

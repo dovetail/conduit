@@ -131,10 +131,30 @@ export async function resolveMcpTokenForUrl(
   return null
 }
 
+// While a run is live its OAuth MCP tokens are re-resolved on this cadence and
+// renewed when they would die within RUN_MCP_REFRESH_SKEW_MS. Providers such as
+// Buildkite issue hour-long access tokens, far shorter than a long run.
+export const RUN_MCP_REFRESH_INTERVAL_MS = 5 * 60_000
+const RUN_MCP_REFRESH_SKEW_MS = 15 * 60_000
+
+/** A run's MCP server whose Authorization header is a Conduit-managed OAuth bearer. */
+export interface RunMcpOAuthServer {
+  key: string
+  url: string
+  owner: string
+  /** The Authorization value injected at launch. */
+  authorization: string
+}
+
+function authorizationFor(token: OAuthToken): string {
+  return `${normalizeTokenScheme(token.tokenType)} ${token.accessToken}`
+}
+
 export async function injectOAuthTokens(
   config: McpServersConfig,
   actingUserId: string,
-  globalUrls: Set<string>
+  globalUrls: Set<string>,
+  oauthServers?: RunMcpOAuthServer[]
 ): Promise<McpServersConfig> {
   const updated: Record<string, McpServerEntry> = {}
   for (const [key, entry] of Object.entries(config.mcpServers)) {
@@ -142,16 +162,31 @@ export async function injectOAuthTokens(
       const owner = globalUrls.has(entry.url!) ? GLOBAL_OWNER : actingUserId
       const token = await resolveValidToken(entry.url!, owner, RUN_LAUNCH_REFRESH_SKEW_MS)
       if (token) {
-        updated[key] = {
-          ...entry,
-          headers: { ...entry.headers, Authorization: `${normalizeTokenScheme(token.tokenType)} ${token.accessToken}` },
-        }
+        const authorization = authorizationFor(token)
+        updated[key] = { ...entry, headers: { ...entry.headers, Authorization: authorization } }
+        // Legacy SSE hands the client a second endpoint path, which the
+        // worker's relay cannot route, so those keep the launch-time bearer.
+        if (entry.type !== 'sse') oauthServers?.push({ key, url: entry.url!, owner, authorization })
         continue
       }
     }
     updated[key] = entry
   }
   return { mcpServers: updated }
+}
+
+/**
+ * Current Authorization values for a run's OAuth MCP servers, renewing any
+ * that would expire soon. Servers whose token is gone or unrefreshable are
+ * omitted, so the worker keeps the last value it had.
+ */
+export async function resolveRunMcpAuth(servers: RunMcpOAuthServer[]): Promise<Record<string, string>> {
+  const auth: Record<string, string> = {}
+  for (const s of servers) {
+    const token = await resolveValidToken(s.url, s.owner, RUN_MCP_REFRESH_SKEW_MS)
+    if (token) auth[s.key] = authorizationFor(token)
+  }
+  return auth
 }
 
 import { writeMcpConfigContent } from './mcpConfigFile'
@@ -171,10 +206,19 @@ export async function buildMcpConfigContent(
   agentMcpConfig: McpServersConfig,
   actingUserId: string
 ): Promise<string> {
+  return (await buildRunMcpConfig(agentMcpConfig, actingUserId)).content
+}
+
+/** As buildMcpConfigContent, plus the OAuth servers to keep refreshed for the run. */
+export async function buildRunMcpConfig(
+  agentMcpConfig: McpServersConfig,
+  actingUserId: string
+): Promise<{ content: string; oauthServers: RunMcpOAuthServer[] }> {
   const { config, globalUrls } = await buildMergedMcpConfig(agentMcpConfig, actingUserId)
-  const withTokens = await injectOAuthTokens(config, actingUserId, globalUrls)
+  const oauthServers: RunMcpOAuthServer[] = []
+  const withTokens = await injectOAuthTokens(config, actingUserId, globalUrls, oauthServers)
   const withEnv = resolveAllEnvVars(withTokens)
-  return JSON.stringify(withEnv, null, 2)
+  return { content: JSON.stringify(withEnv, null, 2), oauthServers }
 }
 
 export async function writeMcpConfig(

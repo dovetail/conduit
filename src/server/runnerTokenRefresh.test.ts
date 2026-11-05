@@ -26,7 +26,14 @@ vi.mock('./observability', () => ({
   },
 }))
 
-import { startRepoTokenRefresh } from './runner'
+const resolveRunMcpAuth = vi.fn()
+
+vi.mock('../main/utils/mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../main/utils/mcp')>()),
+  resolveRunMcpAuth: (...args: unknown[]) => resolveRunMcpAuth(...args),
+}))
+
+import { startRepoTokenRefresh, startMcpAuthRefresh } from './runner'
 
 const REPO = { id: 'repo-1', url: 'https://github.com/acme/widgets.git', authMethod: 'githubapp' as const }
 
@@ -96,5 +103,68 @@ describe('startRepoTokenRefresh', () => {
     await vi.advanceTimersByTimeAsync(1000)
     expect(messages[0]).toContain('git remote set-url failed')
     expect(captureException).toHaveBeenCalledOnce()
+  })
+})
+
+describe('startMcpAuthRefresh', () => {
+  const SERVERS = [
+    { key: 'buildkite', url: 'https://mcp.buildkite.com/mcp', owner: 'u1', authorization: 'Bearer bk_1' },
+    { key: 'linear', url: 'https://mcp.linear.app/mcp', owner: '__global__', authorization: 'Bearer lin_1' },
+  ]
+  let finalizers: Array<() => void>
+  let messages: string[]
+  let updateMcpAuth: ReturnType<typeof vi.fn>
+  let handle: WorkerHandle
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    finalizers = []
+    messages = []
+    resolveRunMcpAuth.mockReset()
+    captureException.mockReset()
+    updateMcpAuth = vi.fn(async () => {})
+    handle = { runId: 'run-1', ephemeral: false, cancel: async () => {}, updateMcpAuth }
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  function start(): void {
+    startMcpAuthRefresh(
+      'run-1',
+      SERVERS,
+      handle,
+      { emitSystemMessage: (t) => messages.push(t), onFinalized: (cb) => finalizers.push(cb) },
+      1000
+    )
+  }
+
+  it('sends only tokens that changed since the worker last heard', async () => {
+    resolveRunMcpAuth
+      .mockResolvedValueOnce({ buildkite: 'Bearer bk_1', linear: 'Bearer lin_1' })
+      .mockResolvedValueOnce({ buildkite: 'Bearer bk_2', linear: 'Bearer lin_1' })
+      .mockResolvedValueOnce({ buildkite: 'Bearer bk_2', linear: 'Bearer lin_1' })
+    start()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(updateMcpAuth.mock.calls).toEqual([[{ buildkite: 'Bearer bk_2' }]])
+  })
+
+  it('resends a token the worker failed to apply, warning once', async () => {
+    resolveRunMcpAuth.mockResolvedValue({ buildkite: 'Bearer bk_2' })
+    updateMcpAuth.mockRejectedValueOnce(new Error('socket gone')).mockRejectedValueOnce(new Error('socket gone'))
+    start()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(updateMcpAuth).toHaveBeenCalledTimes(3)
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toContain('Could not refresh MCP OAuth credentials: socket gone')
+    expect(captureException).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops once the run is finalized', async () => {
+    start()
+    for (const cb of finalizers) cb()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(resolveRunMcpAuth).not.toHaveBeenCalled()
   })
 })

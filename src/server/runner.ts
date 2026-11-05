@@ -10,7 +10,13 @@ import { getCredentialValue } from '../main/db/queries/agentCredentials'
 import { getRunnerTimeout } from '../main/db/queries/runnerSettings'
 import { resolveBgTaskTimeoutSeconds, bgTaskTimeoutEnvEntry } from './runnerTimeout'
 import { deleteWorkspace } from '../main/execution/workspace'
-import { buildMcpConfigContent, deleteMcpConfig } from '../main/utils/mcp'
+import {
+  buildRunMcpConfig,
+  deleteMcpConfig,
+  resolveRunMcpAuth,
+  RUN_MCP_REFRESH_INTERVAL_MS,
+  type RunMcpOAuthServer,
+} from '../main/utils/mcp'
 import { deleteClaudeConfig } from '../main/utils/claudeConfig'
 import { DEV_USER_ID } from './auth/config'
 import { LOGS_DIR } from '../main/utils/paths'
@@ -471,6 +477,44 @@ export function startRepoTokenRefresh(
 }
 
 /**
+ * Keep a run's OAuth MCP bearers current: re-resolve them (renewing any near
+ * expiry) and hand the worker only the values that changed.
+ */
+export function startMcpAuthRefresh(
+  runId: string,
+  servers: RunMcpOAuthServer[],
+  handle: WorkerHandle,
+  orch: Pick<RunOrchestration, 'emitSystemMessage' | 'onFinalized'>,
+  intervalMs = RUN_MCP_REFRESH_INTERVAL_MS
+): void {
+  const sent = new Map(servers.map((s) => [s.key, s.authorization]))
+  let warned = false
+  const refresh = async (): Promise<void> => {
+    try {
+      const auth = await resolveRunMcpAuth(servers)
+      const changed = Object.fromEntries(Object.entries(auth).filter(([key, value]) => sent.get(key) !== value))
+      if (Object.keys(changed).length === 0) return
+      await handle.updateMcpAuth?.(changed)
+      for (const [key, value] of Object.entries(changed)) sent.set(key, value)
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err))
+      // Retried every interval; one log line per run is enough to explain later 401s.
+      if (!warned) {
+        warned = true
+        orch.emitSystemMessage(
+          `⚠️  Could not refresh MCP OAuth credentials: ${e.message}\n` +
+            `   MCP servers will reject calls once their current token expires.\n`
+        )
+      }
+      reporter.captureException(e, { tags: { component: 'runner', op: 'refreshMcpAuth', runId } })
+    }
+  }
+  const timer = setInterval(() => void refresh(), intervalMs)
+  timer.unref?.()
+  orch.onFinalized(() => clearInterval(timer))
+}
+
+/**
  * Start an agent run in server mode.
  *
  * Orchestrates the run (DB record, log stream, broadcasts, publish) and
@@ -595,8 +639,12 @@ export async function startRunServer(
   //    throw here would leave it orphaned as "running" forever with no log — so
   //    on failure we mark it failed, record why in its log, and surface it.
   let mcpConfigContent: string
+  let mcpOAuthServers: RunMcpOAuthServer[]
   try {
-    mcpConfigContent = await buildMcpConfigContent(agent.mcpConfig, actingUserId)
+    ;({ content: mcpConfigContent, oauthServers: mcpOAuthServers } = await buildRunMcpConfig(
+      agent.mcpConfig,
+      actingUserId
+    ))
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     appendRunLog(runId, `Failed to prepare run: ${msg}`)
@@ -631,6 +679,7 @@ export async function startRunServer(
     prompt: triggerContext ? buildTriggeredPrompt(agent.prompt, triggerContext) : agent.prompt,
     env: await buildRunnerEnvOverlay(agent, startedBy, pushToken),
     mcpConfigContent,
+    mcpOAuthServerKeys: mcpOAuthServers.length ? mcpOAuthServers.map((s) => s.key) : undefined,
     strictMcpConfig: agent.runner === 'claude' ? !agent.enableRepoMcps : undefined,
     workerMemoryMib: agent.workerMemoryMib,
     workspace: workspaceSpec,
@@ -658,6 +707,9 @@ export async function startRunServer(
   orch.register(handle)
   if (refreshableRepo && pushToken && handle.updateRepoToken) {
     startRepoTokenRefresh(runId, refreshableRepo, handle, orch)
+  }
+  if (mcpOAuthServers.length && handle.updateMcpAuth) {
+    startMcpAuthRefresh(runId, mcpOAuthServers, handle, orch)
   }
 
   // Record the resolved workspace path (worker-local for remote factories) and

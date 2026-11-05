@@ -459,6 +459,10 @@ export class WorkerControlPlane {
         const a = this.runs.get(runId)
         if (a) this.sendOn(a.ws, { type: 'run:credentials', runId, repoToken: token })
       },
+      updateMcpAuth: async (auth) => {
+        const a = this.runs.get(runId)
+        if (a) this.sendOn(a.ws, { type: 'run:mcpAuth', runId, auth })
+      },
     }
   }
 
