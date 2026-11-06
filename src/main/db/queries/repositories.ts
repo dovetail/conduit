@@ -186,21 +186,39 @@ export async function updateRepository(
       updateValues.sshKnownHosts = null
     }
   }
-  if (data.githubAppId !== undefined) updateValues.githubAppId = data.githubAppId || null
-  // Only overwrite the stored key when a new (encrypted) one is supplied — an
-  // absent githubPrivateKeyEnc leaves the existing key untouched.
-  if (data.githubPrivateKeyEnc !== undefined) {
-    updateValues.githubPrivateKeyEnc = data.githubPrivateKeyEnc
+  // Secrets and known_hosts are only written for the method that will apply
+  // after this update. When the patch omits authMethod, look up the stored one
+  // so a gitlabTokenEnc can't land on a pat repo (and the same for ssh / App).
+  const needsStoredMethod =
+    data.authMethod === undefined &&
+    (data.githubPrivateKeyEnc !== undefined ||
+      data.githubAppId !== undefined ||
+      data.gitlabTokenEnc !== undefined ||
+      data.sshPrivateKeyEnc !== undefined ||
+      'sshKnownHosts' in data ||
+      data.url !== undefined)
+  const existing =
+    needsStoredMethod || data.url !== undefined || 'sshKnownHosts' in data
+      ? await getRepository(id)
+      : null
+  const method = data.authMethod ?? existing?.authMethod
+
+  if (method === 'githubapp') {
+    if (data.githubAppId !== undefined) updateValues.githubAppId = data.githubAppId || null
+    // Only overwrite the stored key when a new (encrypted) one is supplied —
+    // an absent githubPrivateKeyEnc leaves the existing key untouched.
+    if (data.githubPrivateKeyEnc !== undefined) {
+      updateValues.githubPrivateKeyEnc = data.githubPrivateKeyEnc
+    }
   }
-  if (data.gitlabTokenEnc !== undefined && (data.authMethod === undefined || data.authMethod === 'gitlab')) {
+  if (method === 'gitlab' && data.gitlabTokenEnc !== undefined) {
     updateValues.gitlabTokenEnc = data.gitlabTokenEnc
   }
-  if (data.sshPrivateKeyEnc !== undefined && (data.authMethod === undefined || data.authMethod === 'sshkey')) {
-    updateValues.sshPrivateKeyEnc = data.sshPrivateKeyEnc
-    updateValues.sshPublicKey = data.sshPublicKey ?? null
-  }
-  if (data.authMethod === undefined || data.authMethod === 'sshkey') {
-    const existing = data.url !== undefined || 'sshKnownHosts' in data ? await getRepository(id) : null
+  if (method === 'sshkey') {
+    if (data.sshPrivateKeyEnc !== undefined) {
+      updateValues.sshPrivateKeyEnc = data.sshPrivateKeyEnc
+      updateValues.sshPublicKey = data.sshPublicKey ?? null
+    }
     const urlChanged = !!existing && data.url !== undefined && data.url !== existing.url
     const knownHosts = 'sshKnownHosts' in data ? data.sshKnownHosts?.trim() || undefined : existing?.sshKnownHosts
     // A pinned host key belongs to the old URL's host: unless a different one
