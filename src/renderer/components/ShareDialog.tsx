@@ -11,6 +11,7 @@ import {
   useUsers,
 } from '@renderer/hooks/useShares'
 import type { ShareableEntityType, ResolvedShare } from '@shared/types'
+import { shareTargetSubtitle, shareTargetTitle } from '@renderer/lib/shareTargetLabel'
 
 interface ShareDialogProps {
   entityType: ShareableEntityType
@@ -66,23 +67,20 @@ export function ShareDialog({ entityType, entityId, isOpen, onClose }: ShareDial
     (g) => !sharedTargetIds.has(g.id) && (groupQuery === '' || g.name.toLowerCase().includes(groupQuery))
   )
 
-  function getShareTargetName(share: ResolvedShare): string {
-    if (share.targetName) return share.targetName
-    if (share.targetType === 'everyone') return 'Everyone'
-    if (share.targetType === 'user' && share.targetId) {
-      return userMap.get(share.targetId) ?? 'Unknown user'
-    }
-    if (share.targetType === 'group' && share.targetId) {
-      return groupMap.get(share.targetId) ?? 'Unknown group'
-    }
-    return 'Unknown'
+  function shareKnownName(share: ResolvedShare): string | undefined {
+    if (!share.targetId) return undefined
+    if (share.targetType === 'user') return userMap.get(share.targetId)
+    if (share.targetType === 'group') return groupMap.get(share.targetId)
+    return undefined
   }
 
-  function getShareTargetLabel(share: ResolvedShare): string {
-    if (share.targetType === 'everyone') return 'Everyone'
-    if (share.targetType === 'user') return share.targetEmail ?? 'User'
-    if (share.targetType === 'group') return 'Group'
-    return ''
+  function shareTitle(share: ResolvedShare): string {
+    return shareTargetTitle({
+      targetType: share.targetType,
+      targetName: share.targetName,
+      targetId: share.targetId,
+      knownName: shareKnownName(share),
+    })
   }
 
   function handleToggleEveryone() {
@@ -231,7 +229,11 @@ export function ShareDialog({ entityType, entityId, isOpen, onClose }: ShareDial
                 >
                   <Users className="h-4 w-4 text-[var(--text-secondary)]" />
                   <span className="text-xs font-medium text-[var(--text-primary)]">
-                    {group.name}
+                    {shareTargetTitle({
+                      targetType: 'group',
+                      targetName: group.name,
+                      targetId: group.id,
+                    })}
                   </span>
                 </button>
               ))}
@@ -255,7 +257,9 @@ export function ShareDialog({ entityType, entityId, isOpen, onClose }: ShareDial
               className="rounded-lg border border-[var(--border)] overflow-hidden divide-y divide-[var(--border)]"
               style={{ background: 'var(--bg-primary)' }}
             >
-              {entityShares.map((share) => (
+              {entityShares.map((share) => {
+                const title = shareTitle(share)
+                return (
                 <div
                   key={share.id}
                   className="flex items-center justify-between px-3 py-2"
@@ -271,15 +275,18 @@ export function ShareDialog({ entityType, entityId, isOpen, onClose }: ShareDial
                           color: 'var(--accent-fg)',
                         }}
                       >
-                        {getShareTargetName(share).charAt(0).toUpperCase()}
+                        {title.charAt(0).toUpperCase()}
                       </span>
                     )}
                     <div className="min-w-0">
                       <p className="text-xs font-medium text-[var(--text-primary)] truncate">
-                        {getShareTargetName(share)}
+                        {title}
                       </p>
                       <p className="text-[10px] text-[var(--text-secondary)]">
-                        {getShareTargetLabel(share)}
+                        {shareTargetSubtitle({
+                          targetType: share.targetType,
+                          targetEmail: share.targetEmail,
+                        })}
                       </p>
                     </div>
                   </div>
@@ -291,7 +298,8 @@ export function ShareDialog({ entityType, entityId, isOpen, onClose }: ShareDial
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>
                 </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>

@@ -5,10 +5,12 @@ import { resolveRepoToken } from './githubApp'
 import { DEV_CONTEXT } from './auth/config'
 import { reporter } from './observability'
 import type { BroadcastFn } from './runner'
-import type { RepoSyncStatus } from '../shared/types'
+import type { RepoSyncStatus, Repository, RepositoryInput } from '../shared/types'
 
 const SYNC_BACKOFF_BASE_MS = 10 * 60 * 1000 // 10 min
 const SYNC_BACKOFF_MAX_MS = 4 * 60 * 60 * 1000 // 4 h
+const REPO_AUTH_FAILED_MESSAGE =
+  'Repository authentication failed. Update the repository credentials, then retry synchronization.'
 
 /** Per-repo consecutive-failure state driving the retry backoff. */
 export interface SyncFailureState {
@@ -36,6 +38,26 @@ export function isInSyncBackoff(state: SyncFailureState | undefined, now: number
   return state !== undefined && now < state.nextAttemptAt
 }
 
+/** True when a git/auth error message is a rejected credential, not a transient fault. */
+export function isRepoAuthenticationError(message: string): boolean {
+  return /authentication failed|invalid username or token|could not read username|repository not found/i.test(
+    message
+  )
+}
+
+/** Auth-relevant repository updates should force an immediate sync retry. */
+export function repositoryUpdateNeedsSync(
+  input: Partial<RepositoryInput>,
+  stored: Pick<Repository, 'url' | 'authMethod' | 'githubAppId'>
+): boolean {
+  if (input.githubPrivateKey) return true
+  return (
+    (input.url !== undefined && input.url !== stored.url) ||
+    (input.authMethod !== undefined && input.authMethod !== stored.authMethod) ||
+    (input.githubAppId !== undefined && input.githubAppId !== stored.githubAppId)
+  )
+}
+
 /** How to describe the failed sync step in an operator-facing message. */
 function syncAction(op: string): string {
   return op === 'clone' ? 'clone this repository' : 'sync this repository'
@@ -50,6 +72,8 @@ export class RepoSyncService {
   /** Consecutive-failure backoff, keyed by repoId. Cleared on success or a
    *  manual retry (triggerSync). */
   private failures = new Map<string, SyncFailureState>()
+  /** At most one forced retry waiting for the current in-flight sync to finish. */
+  private queuedForce = new Map<string, { promise: Promise<void>; resolve: () => void; reject: (err: unknown) => void }>()
   private broadcast: BroadcastFn
 
   constructor(broadcast: BroadcastFn) {
@@ -70,6 +94,11 @@ export class RepoSyncService {
       clearInterval(this.intervalId)
       this.intervalId = null
     }
+    const err = new Error('Repository synchronization stopped')
+    for (const queued of this.queuedForce.values()) {
+      queued.reject(err)
+    }
+    this.queuedForce.clear()
   }
 
   async syncAll(): Promise<void> {
@@ -85,80 +114,128 @@ export class RepoSyncService {
     // A manual retry is an explicit "try now" — clear any backoff so a repo the
     // user just fixed (e.g. corrected credentials) syncs immediately.
     this.failures.delete(repoId)
-    await this.syncRepo(repoId)
+    if (this.syncInProgress.has(repoId)) {
+      return this.enqueueForcedRetry(repoId)
+    }
+    await this.syncRepo(repoId, true)
   }
 
-  async syncRepo(repoId: string): Promise<void> {
+  private enqueueForcedRetry(repoId: string): Promise<void> {
+    const existing = this.queuedForce.get(repoId)
+    if (existing) return existing.promise
+    let resolve!: () => void
+    let reject!: (err: unknown) => void
+    const promise = new Promise<void>((res, rej) => {
+      resolve = () => res()
+      reject = rej
+    })
+    this.queuedForce.set(repoId, { promise, resolve, reject })
+    return promise
+  }
+
+  async syncRepo(repoId: string, force = false): Promise<void> {
     if (this.syncInProgress.has(repoId)) return
     this.syncInProgress.add(repoId)
 
+    let attemptError: unknown
     try {
-      const repo = await getRepository(repoId)
-      if (!repo || !repo.clonePath) return
-
-      // A repo that keeps failing (bad credentials, unreachable remote) must not
-      // be retried every 5-min cycle — that hammered GitHub and flooded Sentry
-      // with 284 identical clone failures/day. Skip until its backoff elapses.
-      if (isInSyncBackoff(this.failures.get(repoId), Date.now())) return
-
-      // Credential resolution can throw (e.g. GitHub App misconfigured). Treat it
-      // as a sync failure so it also backs off, rather than escaping to syncAll.
-      let token: string | undefined
-      try {
-        token = await resolveRepoToken(repo)
-      } catch (err) {
-        await this.recordSyncFailure(repoId, err, 'auth')
-        return
-      }
-
-      // An HTTPS repo that declares an auth method but resolves no token must NOT
-      // be cloned unauthenticated: git then fails every attempt with "could not
-      // read Username", which (before backoff) hammered GitHub and flooded Sentry
-      // with hundreds of identical errors. Fail fast with an actionable reason.
-      // This is an expected user misconfiguration, not an app bug — mark it
-      // expected so it's recorded against the repo but not reported as an error.
-      if (
-        !token &&
-        repo.url.startsWith('https://') &&
-        (repo.authMethod === 'pat' || repo.authMethod === 'githubapp')
-      ) {
-        await this.recordSyncFailure(
-          repoId,
-          new Error(
-            repo.authMethod === 'pat'
-              ? 'No GitHub credential resolved for this HTTPS repo (auth method: PAT). ' +
-                'Configure a global GitHub PAT, or switch the repo to GitHub App authentication.'
-              : 'No GitHub App token could be minted for this HTTPS repo. ' +
-                'Check the App is installed on the repository and its App ID + private key are configured.'
-          ),
-          'auth',
-          { expected: true }
-        )
-        return
-      }
-
-      const needsClone = repo.syncStatus === 'pending' || !fs.existsSync(repo.clonePath)
-
-      if (needsClone) {
-        await this.updateStatus(repoId, 'cloning')
-        try {
-          await cloneRepo(repo.url, repo.clonePath, repo.defaultBranch, token)
-          await this.recordSyncSuccess(repoId)
-        } catch (err) {
-          await this.recordSyncFailure(repoId, err, 'clone')
-        }
-      } else {
-        // Repo exists on disk — do a fetch
-        await this.updateStatus(repoId, 'syncing')
-        try {
-          await fetchRepo(repo.clonePath, repo.url, repo.defaultBranch, token)
-          await this.recordSyncSuccess(repoId)
-        } catch (err) {
-          await this.recordSyncFailure(repoId, err, 'fetch')
-        }
-      }
+      await this.runSyncAttempt(repoId, force)
+    } catch (err) {
+      attemptError = err
     } finally {
       this.syncInProgress.delete(repoId)
+    }
+
+    await this.drainForcedRetry(repoId)
+    if (attemptError !== undefined) throw attemptError
+  }
+
+  private async drainForcedRetry(repoId: string): Promise<void> {
+    const queued = this.queuedForce.get(repoId)
+    if (!queued) return
+    this.queuedForce.delete(repoId)
+    try {
+      await this.syncRepo(repoId, true)
+      queued.resolve()
+    } catch (err) {
+      queued.reject(err)
+    }
+  }
+
+  private async runSyncAttempt(repoId: string, force: boolean): Promise<void> {
+    const repo = await getRepository(repoId)
+    if (!repo || !repo.clonePath) return
+
+    // A repo that keeps failing (bad credentials, unreachable remote) must not
+    // be retried every 5-min cycle — that hammered GitHub and flooded Sentry
+    // with 284 identical clone failures/day. Skip until its backoff elapses.
+    // A forced retry (manual or queued after an in-flight attempt) tries now.
+    if (!force && isInSyncBackoff(this.failures.get(repoId), Date.now())) return
+
+    // Rejected credentials are terminal until the operator retries or updates
+    // auth config. Persist across restarts via the sanitized syncError prefix.
+    if (
+      !force &&
+      repo.syncStatus === 'error' &&
+      repo.syncError?.startsWith('Repository authentication failed.')
+    ) {
+      return
+    }
+
+    // Credential resolution can throw (e.g. GitHub App misconfigured). Treat it
+    // as a sync failure so it also backs off, rather than escaping to syncAll.
+    let token: string | undefined
+    try {
+      token = await resolveRepoToken(repo)
+    } catch (err) {
+      await this.recordSyncFailure(repoId, err, 'auth')
+      return
+    }
+
+    // An HTTPS repo that declares an auth method but resolves no token must NOT
+    // be cloned unauthenticated: git then fails every attempt with "could not
+    // read Username", which (before backoff) hammered GitHub and flooded Sentry
+    // with hundreds of identical errors. Fail fast with an actionable reason.
+    // This is an expected user misconfiguration, not an app bug — mark it
+    // expected so it's recorded against the repo but not reported as an error.
+    if (
+      !token &&
+      repo.url.startsWith('https://') &&
+      (repo.authMethod === 'pat' || repo.authMethod === 'githubapp')
+    ) {
+      await this.recordSyncFailure(
+        repoId,
+        new Error(
+          repo.authMethod === 'pat'
+            ? 'No GitHub credential resolved for this HTTPS repo (auth method: PAT). ' +
+              'Configure a global GitHub PAT, or switch the repo to GitHub App authentication.'
+            : 'No GitHub App token could be minted for this HTTPS repo. ' +
+              'Check the App is installed on the repository and its App ID + private key are configured.'
+        ),
+        'auth',
+        { expected: true }
+      )
+      return
+    }
+
+    const needsClone = repo.syncStatus === 'pending' || !fs.existsSync(repo.clonePath)
+
+    if (needsClone) {
+      await this.updateStatus(repoId, 'cloning')
+      try {
+        await cloneRepo(repo.url, repo.clonePath, repo.defaultBranch, token)
+        await this.recordSyncSuccess(repoId)
+      } catch (err) {
+        await this.recordSyncFailure(repoId, err, 'clone')
+      }
+    } else {
+      await this.updateStatus(repoId, 'syncing')
+      try {
+        await fetchRepo(repo.clonePath, repo.url, repo.defaultBranch, token)
+        await this.recordSyncSuccess(repoId)
+      } catch (err) {
+        await this.recordSyncFailure(repoId, err, 'fetch')
+      }
     }
   }
 
@@ -197,13 +274,22 @@ export class RepoSyncService {
     this.failures.set(repoId, nextSyncBackoff(prev, Date.now()))
     const raw = err instanceof Error ? err.message : String(err)
     const diskFull = isDiskFullError(raw)
-    const message = diskFull ? diskFullMessage(syncAction(op)) : raw
+    const authFailed = isRepoAuthenticationError(raw)
+    const message = diskFull
+      ? diskFullMessage(syncAction(op))
+      : authFailed
+        ? REPO_AUTH_FAILED_MESSAGE
+        : raw
     if (!prev) {
       const tags = { component: 'repoSync', repoId, op }
       if (opts?.expected) {
         reporter.captureMessage(message, 'warning', { tags })
       } else if (diskFull) {
         reporter.captureMessage(message, 'error', { tags, extra: { gitError: raw } })
+      } else if (authFailed) {
+        reporter.captureMessage(message, 'warning', {
+          tags: { ...tags, failureKind: 'authentication' },
+        })
       } else {
         reporter.captureException(err, { tags })
       }

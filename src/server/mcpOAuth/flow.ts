@@ -47,15 +47,26 @@ export function normalizeTokenScheme(tokenType: string): string {
   return tokenType.toLowerCase() === 'bearer' ? 'Bearer' : tokenType
 }
 
+/** Coerce `expires_in` (seconds) from a token response. Some providers send it as a string. */
+function parseExpiresInSeconds(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value)
+    if (Number.isFinite(n)) return n
+  }
+  return undefined
+}
+
 function tokenResponseToOAuthToken(serverUrl: string, data: Record<string, unknown>): OAuthToken {
   if (typeof data.access_token !== 'string') {
     throw new Error('Token response did not contain access_token')
   }
+  const expiresIn = parseExpiresInSeconds(data.expires_in)
   return {
     serverUrl,
     accessToken: data.access_token,
     refreshToken: typeof data.refresh_token === 'string' ? data.refresh_token : undefined,
-    expiresAt: typeof data.expires_in === 'number' ? Date.now() + data.expires_in * 1000 : undefined,
+    expiresAt: expiresIn !== undefined ? Date.now() + expiresIn * 1000 : undefined,
     tokenType: normalizeTokenScheme(typeof data.token_type === 'string' ? data.token_type : 'Bearer'),
     scope: typeof data.scope === 'string' ? data.scope : undefined,
   }

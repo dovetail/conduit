@@ -7,6 +7,7 @@ import { useRunnerTimeouts, useSetRunnerTimeout } from '@renderer/hooks/useRunne
 import { useDataDirSweep } from '@renderer/hooks/useDataDirSweep'
 import { useStorageUsage } from '@renderer/hooks/useStorageUsage'
 import { formatBytes } from '@renderer/lib/utils'
+import { McpAccessCard } from './McpAccessCard'
 import type { RunnerType, SweepResult } from '@shared/types'
 
 interface RunnerMeta {
@@ -278,35 +279,40 @@ export function SettingsManager() {
         <div>
           <h1 className="text-sm font-semibold text-[var(--text-primary)]">Settings</h1>
           <p className="text-xs text-[var(--text-secondary)] mt-0.5">
-            Agent authentication and storage maintenance
+            Agent authentication, MCP access, and storage maintenance
           </p>
         </div>
       </div>
 
       {/* Body */}
-      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3 max-w-2xl">
-        <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-[var(--accent)]/10 border border-[var(--accent)]/20 text-xs text-[var(--text-secondary)]">
-          <Info className="h-3.5 w-3.5 text-[var(--accent)] flex-shrink-0 mt-0.5" />
-          <span>
-            Keys and the background-task timeout are stored per agent harness and scoped to your
-            account — every agent you own uses them. Keys are encrypted at rest and injected as the
-            runner's environment variable. An explicit env var or timeout set on an individual agent
-            overrides what you store here.
-          </span>
+      <div className="flex-1 overflow-y-auto px-5 py-4">
+        <div className="max-w-2xl space-y-3">
+          <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-lg bg-[var(--accent)]/10 border border-[var(--accent)]/20 text-xs text-[var(--text-secondary)]">
+            <Info className="h-3.5 w-3.5 text-[var(--accent)] flex-shrink-0 mt-0.5" />
+            <span>
+              Keys and the background-task timeout are stored per agent harness and scoped to your
+              account — every agent you own uses them. Keys are encrypted at rest and injected as the
+              runner's environment variable. An explicit env var or timeout set on an individual agent
+              overrides what you store here.
+            </span>
+          </div>
+
+          <h2 className="text-xs font-medium text-[var(--text-secondary)] pt-1">Agent harnesses</h2>
+          {RUNNERS.map((meta) => (
+            <RunnerSettingsCard
+              key={meta.runner}
+              meta={meta}
+              configured={!!status?.[meta.runner]}
+              seconds={timeouts?.[meta.runner] ?? 0}
+            />
+          ))}
+
+          <h2 className="text-xs font-medium text-[var(--text-secondary)] pt-3">MCP access</h2>
+          <McpAccessCard />
+
+          <h2 className="text-xs font-medium text-[var(--text-secondary)] pt-3">Storage maintenance</h2>
+          <StorageMaintenanceCard />
         </div>
-
-        <h2 className="text-xs font-medium text-[var(--text-secondary)] pt-1">Agent harnesses</h2>
-        {RUNNERS.map((meta) => (
-          <RunnerSettingsCard
-            key={meta.runner}
-            meta={meta}
-            configured={!!status?.[meta.runner]}
-            seconds={timeouts?.[meta.runner] ?? 0}
-          />
-        ))}
-
-        <h2 className="text-xs font-medium text-[var(--text-secondary)] pt-3">Storage maintenance</h2>
-        <StorageMaintenanceCard />
       </div>
     </div>
   )

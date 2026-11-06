@@ -55,6 +55,29 @@ describe('oauthTokens', () => {
     expect(lastConflictUpdateSet).not.toHaveProperty('connectedByUserId')
   })
 
+  it('omits refreshToken from onConflictDoUpdate set when absent (reconnect must not wipe RT)', async () => {
+    // handleCallback → exchangeCode sometimes returns only an access token. Writing
+    // refreshToken: null on conflict would destroy a previously stored RT and leave
+    // Linear permanently unrefreshable until the next full grant that includes one.
+    await saveToken(
+      { serverUrl: 'https://m', accessToken: 'AT2', tokenType: 'Bearer', expiresAt: 999 },
+      'owner-a',
+      'user-1'
+    )
+    expect(lastConflictUpdateSet).not.toBeNull()
+    expect(lastConflictUpdateSet).not.toHaveProperty('refreshToken')
+    expect(lastConflictUpdateSet).toHaveProperty('accessToken', 'enc:AT2')
+  })
+
+  it('includes refreshToken in onConflictDoUpdate set when a new RT is provided', async () => {
+    await saveToken(
+      { serverUrl: 'https://m', accessToken: 'AT2', refreshToken: 'RT-NEW', tokenType: 'Bearer', expiresAt: 999 },
+      'owner-a',
+      null
+    )
+    expect(lastConflictUpdateSet).toHaveProperty('refreshToken', 'enc:RT-NEW')
+  })
+
   it('normalizes a lowercase "bearer" token_type to "Bearer" on read (fixes tools/list 401)', async () => {
     // Row persisted with a lowercase scheme (as Linear returns) — the fake matcher
     // keys on serverUrl='__a', tokenOwner='__b'.

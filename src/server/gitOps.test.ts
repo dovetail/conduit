@@ -67,6 +67,7 @@ describe('isDiskFullError', () => {
   it('detects ENOSPC / no-space git failures', () => {
     expect(isDiskFullError('error: ... No space left on device')).toBe(true)
     expect(isDiskFullError('spawn git ENOSPC')).toBe(true)
+    expect(isDiskFullError('Not enough disk space to start this run. Free space on the Conduit server or increase its data volume, then retry.')).toBe(true)
   })
   // git's config writer drops the errno, so this out-of-space failure arrives
   // with no "No space left on device" to match on.

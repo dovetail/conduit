@@ -104,4 +104,19 @@ describe('flow', () => {
     expect(p.get('resource')).toBe('https://mcp.linear.app/mcp')
     expect(tok.refreshToken).toBe('RT')
   })
+
+  it('tokenResponseToOAuthToken coerces string expires_in so refresh scheduling still works', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ access_token: 'AT', refresh_token: 'RT', expires_in: '86399', token_type: 'Bearer' }),
+    }) as any))
+    const before = Date.now()
+    const tok = await exchangeCode({
+      serverUrl: 'https://mcp.linear.app/mcp', tokenEndpoint: 'https://as/token', clientId: 'c1',
+      code: 'x', redirectUri: 'http://localhost:7456/mcp/oauth/callback', verifier: 'v',
+    })
+    expect(tok.expiresAt).toBeDefined()
+    expect(tok.expiresAt!).toBeGreaterThanOrEqual(before + 86399 * 1000)
+    expect(tok.expiresAt!).toBeLessThanOrEqual(Date.now() + 86399 * 1000)
+  })
 })

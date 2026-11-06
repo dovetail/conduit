@@ -1,12 +1,19 @@
 /**
- * Start a long-running Fargate e2e run and leave it live so the orchestrator
- * can SIGTERM the server and assert factory shutdown StopTasks everything.
+ * Graceful server shutdown must hand a started Fargate run to the replacement
+ * server rather than fail it. Two modes, both launched by e2e/fargate/run.mjs:
  *
- * Env: CONDUIT_URL. Launched by e2e/fargate/run.mjs.
+ * - prep (default): start a long-running run and leave it live so the
+ *   orchestrator can SIGTERM the server.
+ * - adopt (SHUTDOWN_ADOPT_RUN_ID set): against the replacement server, assert
+ *   the run is still `running` and its events keep streaming.
+ *
+ * Env: CONDUIT_URL, SHUTDOWN_ADOPT_RUN_ID, SHUTDOWN_ADOPT_AGENT_ID.
  */
 import WebSocket from 'ws'
 
 const BASE = process.env.CONDUIT_URL
+const ADOPT_RUN_ID = process.env.SHUTDOWN_ADOPT_RUN_ID
+const ADOPT_AGENT_ID = process.env.SHUTDOWN_ADOPT_AGENT_ID
 const results = []
 const check = (name, ok, detail = '') => {
   results.push({ name, ok, detail })
@@ -42,34 +49,43 @@ const invoke = (channel, ...args) =>
     setTimeout(() => pending.has(id) && (pending.delete(id), reject(new Error(`${channel} timed out`))), 30000)
   })
 
-try {
-  const agent = await invoke('agents:create', {
-    name: 'e2e-fargate-shutdown',
-    runner: 'claude',
-    prompt: 'E2E_LONG keep going until the server shuts down',
-    envVars: {},
-    mcpConfig: { mcpServers: {} },
-  })
-  const run = await invoke('runs:start', agent.id)
-  check('shutdown-prep: long run started', run?.status === 'running' && run?.workerKind === 'fargate', `id=${run?.id}`)
-
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('no events streamed within 30s')), 30000)
+const waitForEvents = (runId, timeoutMs = 30000) =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`no events streamed within ${timeoutMs}ms`)), timeoutMs)
     eventListeners.push((payload) => {
-      if (payload.runId === run.id && payload.events?.length > 0) {
+      if (payload.runId === runId && payload.events?.length > 0) {
         clearTimeout(timer)
         resolve()
       }
     })
   })
-  check('shutdown-prep: execution is live', true, `runId=${run.id}`)
-  console.log(`[fargate] SHUTDOWN_PREP_READY runId=${run.id}`)
+
+try {
+  if (ADOPT_RUN_ID) {
+    await waitForEvents(ADOPT_RUN_ID)
+    check('shutdown-adopt: events resume on the replacement server', true, `runId=${ADOPT_RUN_ID}`)
+    const [row] = (await invoke('runs:list', ADOPT_AGENT_ID)).filter((r) => r.id === ADOPT_RUN_ID)
+    check('shutdown-adopt: run still running', row?.status === 'running', `status=${row?.status}`)
+  } else {
+    const agent = await invoke('agents:create', {
+      name: 'e2e-fargate-shutdown',
+      runner: 'claude',
+      prompt: 'E2E_LONG keep going until the server shuts down',
+      envVars: {},
+      mcpConfig: { mcpServers: {} },
+    })
+    const run = await invoke('runs:start', agent.id)
+    check('shutdown-prep: long run started', run?.status === 'running' && run?.workerKind === 'fargate', `id=${run?.id}`)
+    await waitForEvents(run.id)
+    check('shutdown-prep: execution is live', true, `runId=${run.id}`)
+    console.log(`[fargate] SHUTDOWN_PREP_READY runId=${run.id} agentId=${agent.id}`)
+  }
 
   const failed = results.filter((r) => !r.ok)
   console.log(failed.length === 0 ? `\nALL ${results.length} CHECKS PASSED` : `\n${failed.length} CHECK(S) FAILED`)
   process.exitCode = failed.length === 0 ? 0 : 1
 } catch (err) {
-  console.error('E2E fargate shutdown-prep error:', err)
+  console.error('E2E fargate shutdown driver error:', err)
   process.exitCode = 1
 } finally {
   ws.close()

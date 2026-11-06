@@ -16,7 +16,8 @@
  *
  * MCP note: cursor-agent has no `--mcp-config` flag — it loads MCP servers from
  * the workspace's `.cursor/mcp.json` and the user's global Cursor config, so
- * Conduit's managed MCP config is not injected for this runner.
+ * the worker merges Conduit's managed MCP config into the workspace file for
+ * the run (see server/workers/cursorMcpConfig.ts).
  */
 export interface CursorArgsOptions {
   /** Exact model identifier from `cursor-agent models`. Unset = CLI default ('auto'). */

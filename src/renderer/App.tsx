@@ -10,7 +10,13 @@ import { LoginPage } from './components/LoginPage'
 import { useAuth } from './contexts/AuthContext'
 import { useUIStore } from './store/ui'
 import { useCreateAgent } from './hooks/useAgents'
+import { useEntityChangeEvents } from './hooks/useMcpTokens'
 import { cn } from './lib/utils'
+
+function EntityChangeSync() {
+  useEntityChangeEvents()
+  return null
+}
 
 function EmptyState() {
   const createAgent = useCreateAgent()
@@ -111,6 +117,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden" style={{ background: 'var(--bg-primary)' }}>
+      <EntityChangeSync />
       <PanelGroup direction="horizontal" className="h-full w-full">
         {/* Sidebar */}
         <Panel

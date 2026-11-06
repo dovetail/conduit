@@ -59,6 +59,13 @@ import {
   shutdownExitCode,
 } from './reconnectPolicy'
 import { createIdempotentShutdown, sendWsJson } from './wsSend'
+import {
+  beginPing,
+  createWorkerSocketLiveness,
+  notePong,
+  onPongTimeout,
+  WORKER_PONG_TIMEOUT_MS,
+} from './liveness'
 
 const SERVER_URL = process.env.CONDUIT_SERVER_URL?.trim()
 const TOKEN = process.env.CONDUIT_WORKER_TOKEN?.trim()
@@ -313,12 +320,42 @@ async function expireRecovery(): Promise<void> {
   await shutdown(result.exitCode)
 }
 
+function terminateSocket(sock: WebSocket): void {
+  try {
+    sock.terminate()
+  } catch {
+    try {
+      sock.close()
+    } catch {
+      // already closed
+    }
+  }
+}
+
 function connect(): void {
   if (shuttingDown) return
   const sock = new WebSocket(SERVER_URL!, {
     headers: { Authorization: `Bearer ${TOKEN}` },
   })
   ws = sock
+  const liveness = createWorkerSocketLiveness()
+  let pongTimer: NodeJS.Timeout | null = null
+
+  const clearPongTimer = (): void => {
+    if (pongTimer) clearTimeout(pongTimer)
+    pongTimer = null
+  }
+
+  const dropDeadSocket = (why: string): void => {
+    console.warn(`[worker] ${why} — reconnecting`)
+    clearPongTimer()
+    terminateSocket(sock)
+  }
+
+  sock.on('pong', () => {
+    notePong(liveness)
+    clearPongTimer()
+  })
 
   sock.on('open', () => {
     policy.noteOpen()
@@ -334,15 +371,32 @@ function connect(): void {
       pendingRunIds: pending,
     }).catch((err) => {
       console.error('[worker] hello failed:', err)
+      dropDeadSocket('Hello failed')
     })
     if (pending.length === 0) policy.resetBackoff()
     heartbeat = setInterval(() => {
+      if (beginPing(liveness) === 'dead') {
+        dropDeadSocket('Control-plane ping unanswered')
+        return
+      }
+      try {
+        sock.ping()
+      } catch {
+        dropDeadSocket('Control-plane ping failed')
+        return
+      }
+      clearPongTimer()
+      pongTimer = setTimeout(() => {
+        if (onPongTimeout(liveness) === 'dead') dropDeadSocket('Control-plane pong timed out')
+      }, WORKER_PONG_TIMEOUT_MS)
       void send({
         type: 'worker:heartbeat',
         workerId: WORKER_ID,
         activeRunIds: [...handles.keys()],
       }).catch(() => {
-        // Heartbeat write failures are retried on the next interval or reconnect.
+        // A send timeout means the socket is not delivering. Swallowing it
+        // left the worker silent until the server lease failed the run.
+        dropDeadSocket('Heartbeat failed')
       })
     }, WORKER_HEARTBEAT_INTERVAL_MS)
   })
@@ -369,6 +423,14 @@ function connect(): void {
     } else if (msg.type === 'run:cancel') {
       console.log(`[worker] Cancel requested for run ${msg.runId}`)
       void handles.get(msg.runId)?.cancel()
+    } else if (msg.type === 'run:credentials') {
+      handles.get(msg.runId)?.updateRepoToken?.(msg.repoToken).catch((err) => {
+        console.error(`[worker] Failed to refresh credentials for run ${msg.runId}:`, err)
+      })
+    } else if (msg.type === 'run:mcpAuth') {
+      handles.get(msg.runId)?.updateMcpAuth?.(msg.auth).catch((err) => {
+        console.error(`[worker] Failed to refresh MCP credentials for run ${msg.runId}:`, err)
+      })
     } else if (msg.type === 'run:ack') {
       applyAck(msg.runId, msg.sequence)
     } else if (msg.type === 'run:resume') {
@@ -381,7 +443,8 @@ function connect(): void {
   sock.on('close', (code, reason) => {
     if (heartbeat) clearInterval(heartbeat)
     heartbeat = null
-    ws = null
+    clearPongTimer()
+    if (ws === sock) ws = null
     if (shuttingDown) return
     const recovering = handles.size > 0 || deliveryQueues.size > 0
     if (recovering) {

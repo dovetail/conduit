@@ -55,12 +55,25 @@ export interface RunSpec {
   env: Record<string, string>
   /**
    * Serialized McpServersConfig with global servers merged, OAuth tokens
-   * injected, and env vars expanded. Undefined for cursor (cursor-agent has no
-   * --mcp-config flag); required for claude/amp.
+   * injected, and env vars expanded. claude/amp read it via --mcp-config;
+   * cursor gets it merged into the workspace's .cursor/mcp.json. Optional only
+   * so a newer worker accepts a cursor RunSpec from an older server.
    */
   mcpConfigContent?: string
+  /**
+   * Keys of URL servers in mcpConfigContent whose Authorization header is a
+   * Conduit-managed OAuth bearer. The worker fronts them with a loopback relay
+   * so `updateMcpAuth` can swap in renewed tokens mid-run; workers that predate
+   * this field keep the launch-time bearer.
+   */
+  mcpOAuthServerKeys?: string[]
   /** claude only: --strict-mcp-config (ignore repo/host MCP configs). */
   strictMcpConfig?: boolean
+  /**
+   * Fargate task memory in MiB. Unset uses the factory default (8192 at 2 vCPU).
+   * The Fargate factory rejects values outside 4096–16384 (steps of 1024).
+   */
+  workerMemoryMib?: number
   workspace: WorkspaceSpec
 }
 
@@ -93,6 +106,16 @@ export interface WorkerHandle {
   readonly workerId?: string
   /** Request termination (SIGTERM semantics locally; cancel/kill remotely). */
   cancel(): Promise<void>
+  /**
+   * Swap in a freshly minted repo token (GitHub App installation tokens expire
+   * after about an hour). Absent when the run has no tokenized checkout.
+   */
+  updateRepoToken?(token: string): Promise<void>
+  /**
+   * Swap in renewed Authorization values for the run's OAuth MCP servers,
+   * keyed by server key. Absent when the run has no relayed MCP servers.
+   */
+  updateMcpAuth?(auth: Record<string, string>): Promise<void>
 }
 
 /**

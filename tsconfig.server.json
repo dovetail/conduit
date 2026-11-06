@@ -1,5 +1,5 @@
 {
-  "include": ["src/server/**/*", "src/main/**/*", "src/shared/**/*", "src/worker/**/*"],
+  "include": ["src/server/**/*", "src/main/**/*", "src/shared/**/*", "src/worker/**/*", "src/mcpBridge/**/*"],
   "exclude": [
     "**/*.test.ts",
     "src/main/index.ts",

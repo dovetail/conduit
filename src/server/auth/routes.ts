@@ -5,7 +5,8 @@ import { DEV_USER } from './devBypass'
 import { getUser } from '../../main/db/queries/users'
 import { upsertUser } from '../../main/db/queries/users'
 import { getUserGroupIds, listGroups, upsertGroup, syncUserGroups } from '../../main/db/queries/groups'
-import { getAuthorizationUrl, exchangeCode } from './okta'
+import { getAuthorizationUrl, exchangeCode, resolveOktaGroupName } from './okta'
+import { needsDirectoryLookup } from './oktaDisplay'
 import { createSession, deleteSession } from '../../main/db/queries/sessions'
 import { resolveSession } from './session'
 import { setSessionCookie, clearSessionCookie, SESSION_COOKIE_NAME } from './cookie'
@@ -170,10 +171,18 @@ router.get('/callback', async (req: Request, res: Response) => {
       avatarUrl: claims.picture as string | undefined,
     })
 
-    // Upsert groups and sync membership
+    // Upsert groups and sync membership. Keep the claim as the stable id;
+    // when it is an opaque Okta group id, resolve a friendly display name.
     const groupIds: string[] = []
-    for (const groupName of claimGroups) {
-      const group = await upsertGroup({ id: groupName, name: groupName })
+    for (const claim of claimGroups) {
+      let name = claim
+      if (needsDirectoryLookup(claim, claim)) {
+        const remote = await resolveOktaGroupName(claim)
+        if (remote && !needsDirectoryLookup(remote.name, claim)) {
+          name = remote.name
+        }
+      }
+      const group = await upsertGroup({ id: claim, name })
       groupIds.push(group.id)
     }
     await syncUserGroups(sub, groupIds)

@@ -11,14 +11,19 @@ import {
   FARGATE_DEFAULT_STOP_TIMEOUT_MS,
   FARGATE_WORKER_CPU,
   FARGATE_WORKER_MEMORY_MIB,
+  STOP_DEPROVISION_TIMEOUT_MS,
   STOP_VERIFY_TIMEOUT_MS,
   FargateWorkerFactory,
   buildFargateEcsClientConfig,
+  resolveFargateTaskSize,
   isAllowlistedE2eModule,
   resolveFargateConfig,
+  describeStoppedContainers,
+  stopWaitVerdict,
   tryLoadE2eFakeEcsClient,
   type FargateWorkerConfig,
 } from './fargateWorker'
+import { reporter } from '../observability'
 
 vi.mock('../observability', () => ({
   reporter: { captureException: vi.fn(), captureMessage: vi.fn() },
@@ -118,6 +123,24 @@ function envNames(input: Record<string, unknown>): string[] {
   }
   return (overrides.containerOverrides[0].environment ?? []).map((e) => e.name)
 }
+
+describe('resolveFargateTaskSize', () => {
+  it('defaults to 2 vCPU / 8192 MiB', () => {
+    expect(resolveFargateTaskSize()).toEqual({ cpu: '2048', memory: '8192' })
+    expect(resolveFargateTaskSize(undefined)).toEqual({ cpu: '2048', memory: '8192' })
+  })
+
+  it('accepts the top of the 2 vCPU range', () => {
+    expect(resolveFargateTaskSize(16384)).toEqual({ cpu: '2048', memory: '16384' })
+    expect(resolveFargateTaskSize(4096)).toEqual({ cpu: '2048', memory: '4096' })
+  })
+
+  it('rejects sizes outside the 2 vCPU range or off the 1024 step', () => {
+    for (const memory of [2048, 9000, 32768, 8192.5]) {
+      expect(() => resolveFargateTaskSize(memory)).toThrow(/4096–16384/)
+    }
+  })
+})
 
 describe('resolveFargateConfig', () => {
   it('requires cluster, task definition, and subnets', () => {
@@ -821,6 +844,26 @@ describe('buildFargateEcsClientConfig', () => {
   })
 })
 
+describe('describeStoppedContainers', () => {
+  it('reports exit code and reason per container, and the stop code', () => {
+    expect(
+      describeStoppedContainers({
+        containers: [
+          { name: 'worker', exitCode: 1 },
+          { name: 'sidecar', reason: 'CannotPullContainerError' },
+          { name: 'idle' },
+        ],
+        stopCode: 'TaskFailedToStart',
+      })
+    ).toBe('container worker exited 1; container sidecar CannotPullContainerError; stop code TaskFailedToStart')
+  })
+
+  it('is empty when ECS recorded nothing', () => {
+    expect(describeStoppedContainers(undefined)).toBe('')
+    expect(describeStoppedContainers({ containers: [{ name: 'worker' }] })).toBe('')
+  })
+})
+
 describe('FargateWorkerFactory', () => {
   let ecs: FakeEcs
   let cp: ReturnType<typeof fakeControlPlane>
@@ -837,6 +880,122 @@ describe('FargateWorkerFactory', () => {
 
   it('waits longer than Fargate default stopTimeout before giving up on STOPPED', () => {
     expect(STOP_VERIFY_TIMEOUT_MS).toBeGreaterThan(FARGATE_DEFAULT_STOP_TIMEOUT_MS)
+    expect(STOP_DEPROVISION_TIMEOUT_MS).toBeGreaterThan(STOP_VERIFY_TIMEOUT_MS)
+  })
+
+  it('keeps polling a stop ECS has already accepted instead of failing at the verify cap', () => {
+    const deprovisioning = { lastStatus: 'DEPROVISIONING', desiredStatus: 'STOPPED' }
+    expect(stopWaitVerdict(deprovisioning, STOP_VERIFY_TIMEOUT_MS, STOP_VERIFY_TIMEOUT_MS, STOP_DEPROVISION_TIMEOUT_MS)).toBe(
+      'continue'
+    )
+    expect(stopWaitVerdict(deprovisioning, STOP_DEPROVISION_TIMEOUT_MS, STOP_VERIFY_TIMEOUT_MS, STOP_DEPROVISION_TIMEOUT_MS)).toBe(
+      'deprovision-stuck'
+    )
+    expect(stopWaitVerdict({ lastStatus: 'RUNNING', desiredStatus: 'STOPPED' }, 1_000, 60_000, 600_000)).toBe('continue')
+    expect(stopWaitVerdict({ lastStatus: 'RUNNING', desiredStatus: 'RUNNING' }, 60_000, 60_000, 600_000)).toBe(
+      'not-accepted'
+    )
+    expect(stopWaitVerdict({ lastStatus: 'STOPPED', desiredStatus: 'STOPPED' }, 0, 60_000, 600_000)).toBe('stopped')
+    expect(stopWaitVerdict(undefined, 0, 60_000, 600_000)).toBe('stopped')
+  })
+
+  it('does not report a stop failure while the task is still deprovisioning', async () => {
+    vi.mocked(reporter.captureMessage).mockClear()
+    factory = new FargateWorkerFactory(cp.plane, baseConfig(), ecs as unknown as ECSClient, {
+      uncleanRetryMs: 0,
+      stopVerifyTimeoutMs: 30,
+      stopDeprovisionTimeoutMs: 5_000,
+      stopBackoffMs: 1,
+      stopAttempts: 1,
+    })
+    let describes = 0
+    const original = ecs.send.bind(ecs)
+    ecs.send = async (command) => {
+      if (command.constructor.name === 'DescribeTasksCommand') {
+        describes++
+        ecs.calls.push({ name: 'DescribeTasksCommand', input: (command.input ?? {}) as Record<string, unknown> })
+        if (describes < 4) {
+          return { tasks: [{ taskArn: TASK_ARN, lastStatus: 'DEPROVISIONING', desiredStatus: 'STOPPED' }] }
+        }
+        return { tasks: [{ taskArn: TASK_ARN, lastStatus: 'STOPPED', desiredStatus: 'STOPPED' }] }
+      }
+      return original(command)
+    }
+    const handle = await factory.startRun(SPEC, sink)
+    await expect(handle.cancel()).resolves.toBeUndefined()
+    expect(describes).toBeGreaterThanOrEqual(4)
+    expect(reporter.captureMessage).not.toHaveBeenCalled()
+    expect(ecs.of('StopTaskCommand')).toHaveLength(1)
+  })
+
+  it('reports a stuck RUNNING task once, with the status ECS actually returned', async () => {
+    vi.mocked(reporter.captureMessage).mockClear()
+    factory = new FargateWorkerFactory(cp.plane, baseConfig(), ecs as unknown as ECSClient, {
+      uncleanRetryMs: 0,
+      stopVerifyTimeoutMs: 40,
+      stopDeprovisionTimeoutMs: 5_000,
+      stopBackoffMs: 1,
+      stopAttempts: 2,
+    })
+    const original = ecs.send.bind(ecs)
+    ecs.send = async (command) => {
+      if (command.constructor.name === 'DescribeTasksCommand') {
+        ecs.calls.push({ name: 'DescribeTasksCommand', input: (command.input ?? {}) as Record<string, unknown> })
+        return {
+          tasks: [
+            {
+              taskArn: TASK_ARN,
+              lastStatus: 'RUNNING',
+              desiredStatus: 'RUNNING',
+              stoppedReason: 'still going',
+            },
+          ],
+        }
+      }
+      return original(command)
+    }
+    const handle = await factory.startRun(SPEC, sink)
+    await expect(handle.cancel()).rejects.toThrow(/RUNNING/)
+    expect(ecs.of('StopTaskCommand')).toHaveLength(2)
+    expect(reporter.captureMessage).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(reporter.captureMessage).mock.calls[0]?.[0]).toMatch(/RUNNING/)
+    expect(vi.mocked(reporter.captureMessage).mock.calls[0]?.[2]).toMatchObject({
+      extra: { lastStatus: 'RUNNING', desiredStatus: 'RUNNING' },
+    })
+  })
+
+  it('waits out the deprovision budget once instead of retrying StopTask on every slice', async () => {
+    vi.mocked(reporter.captureMessage).mockClear()
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    factory = new FargateWorkerFactory(cp.plane, baseConfig(), ecs as unknown as ECSClient, {
+      uncleanRetryMs: 25,
+      stopVerifyTimeoutMs: 20,
+      stopDeprovisionTimeoutMs: 80,
+      stopBackoffMs: 1,
+      stopAttempts: 3,
+      shutdownDeadlineMs: 40,
+    })
+    const original = ecs.send.bind(ecs)
+    ecs.send = async (command) => {
+      if (command.constructor.name === 'DescribeTasksCommand') {
+        ecs.calls.push({ name: 'DescribeTasksCommand', input: (command.input ?? {}) as Record<string, unknown> })
+        return { tasks: [{ taskArn: TASK_ARN, lastStatus: 'DEPROVISIONING', desiredStatus: 'STOPPED' }] }
+      }
+      return original(command)
+    }
+    const handle = await factory.startRun(SPEC, sink)
+    // Stop was accepted; lingering DEPROVISIONING is not a StopTask failure.
+    await expect(handle.cancel()).resolves.toBeUndefined()
+    expect(ecs.of('StopTaskCommand')).toHaveLength(1)
+    expect(reporter.captureMessage).not.toHaveBeenCalled()
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('DEPROVISIONING'))).toBe(true)
+    // Unclean retry must not fire StopTask again for this ARN.
+    await new Promise((r) => setTimeout(r, 80))
+    expect(ecs.of('StopTaskCommand')).toHaveLength(1)
+    // Forgotten from active — shutdown must not hang waiting on deprovision.
+    await expect(factory.shutdown()).resolves.toBeUndefined()
+    expect(ecs.of('StopTaskCommand')).toHaveLength(1)
+    warnSpy.mockRestore()
   })
 
   it('waits through DEACTIVATING until DescribeTasks reports STOPPED', async () => {
@@ -862,6 +1021,16 @@ describe('FargateWorkerFactory', () => {
     const handle = await factory.startRun(SPEC, sink)
     await expect(handle.cancel()).resolves.toBeUndefined()
     expect(describes).toBeGreaterThanOrEqual(3)
+  })
+
+  it('raises the task memory when the run asks for 16 GiB', async () => {
+    await factory.startRun({ ...SPEC, workerMemoryMib: 16384 }, sink)
+    expect(ecs.of('RunTaskCommand')[0].overrides).toMatchObject({ cpu: '2048', memory: '16384' })
+  })
+
+  it('refuses a task memory Fargate will not run at 2 vCPU', async () => {
+    await expect(factory.startRun({ ...SPEC, workerMemoryMib: 9000 }, sink)).rejects.toThrow(/4096–16384/)
+    expect(ecs.of('RunTaskCommand')).toHaveLength(0)
   })
 
   it('sends an exact RunTask shape with startedBy, tags, and 2 vCPU / 8192 MiB', async () => {
@@ -970,6 +1139,25 @@ describe('FargateWorkerFactory', () => {
     expect(cp.cancelAssignTo).toHaveBeenCalledWith(
       'fargate-run-1',
       expect.objectContaining({ message: expect.stringMatching(/CannotPullContainerError|STOPPED|image not found/) })
+    )
+  })
+
+  it('names the container exit code when the task stops before the worker connects', async () => {
+    ecs.describeResponse = {
+      tasks: [
+        {
+          taskArn: TASK_ARN,
+          lastStatus: 'STOPPED',
+          stoppedReason: 'Essential container in task exited',
+          stopCode: 'EssentialContainerExited',
+          containers: [{ name: 'worker', exitCode: 137, reason: 'OutOfMemoryError: Container killed' }],
+        },
+      ],
+    }
+    cp.assignTo.mockImplementation(() => new Promise(() => {}))
+    await expect(factory.startRun(SPEC, sink)).rejects.toThrow(
+      'stopped before the worker connected: Essential container in task exited ' +
+        '(container worker exited 137: OutOfMemoryError: Container killed; stop code EssentialContainerExited)'
     )
   })
 
@@ -1128,10 +1316,46 @@ describe('FargateWorkerFactory', () => {
     await expect(factory.shutdown()).rejects.toThrow(/Failed to stop|stop/i)
   })
 
-  it('shutdown StopTasks every in-flight run and verifies STOPPED', async () => {
-    await factory.startRun(SPEC, sink)
+  it('emits one reporter event per task ARN across unclean cleanup retries', async () => {
+    vi.mocked(reporter.captureMessage).mockClear()
+    factory = new FargateWorkerFactory(cp.plane, baseConfig(), ecs as unknown as ECSClient, {
+      stopAttempts: 1,
+      stopBackoffMs: 1,
+      shutdownDeadlineMs: 20,
+      uncleanRetryMs: 25,
+    })
+    const handle = await factory.startRun(SPEC, sink)
+    ecs.stopImpl = async () => {
+      throw new Error('ServiceException')
+    }
+    await expect(handle.cancel()).rejects.toThrow(/stop|STOPPED|ServiceException/i)
+    const afterCancel = ecs.of('StopTaskCommand').length
+    await vi.waitFor(
+      () => {
+        expect(ecs.of('StopTaskCommand').length).toBeGreaterThan(afterCancel)
+      },
+      { timeout: 200, interval: 10 }
+    )
+    expect(reporter.captureMessage).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(reporter.captureMessage).mock.calls[0]?.[2]).toMatchObject({
+      extra: { taskArn: TASK_ARN },
+    })
+    await expect(factory.shutdown()).rejects.toThrow(/Failed to stop|stop/i)
+    expect(reporter.captureMessage).toHaveBeenCalledTimes(1)
+  })
+
+  it('shutdown StopTasks a run whose worker never connected and verifies STOPPED', async () => {
+    cp.assignTo.mockImplementation(() => new Promise(() => {}))
+    void factory.startRun(SPEC, sink).catch(() => {})
+    await vi.waitFor(() => expect(ecs.of('RunTaskCommand')).toHaveLength(1))
     await factory.shutdown()
     expect(ecs.of('StopTaskCommand')[0]).toMatchObject({ task: TASK_ARN })
-    expect(ecs.of('DescribeTasksCommand')[0]).toMatchObject({ tasks: [TASK_ARN] })
+    expect(ecs.of('DescribeTasksCommand').at(-1)).toMatchObject({ tasks: [TASK_ARN] })
+  })
+
+  it('shutdown leaves a started run’s task running for the replacement server', async () => {
+    await factory.startRun(SPEC, sink)
+    await factory.shutdown()
+    expect(ecs.of('StopTaskCommand')).toEqual([])
   })
 })

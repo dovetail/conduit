@@ -59,29 +59,27 @@ function stripAnsi(text: string): string {
 }
 
 /**
- * The run's textual output for publish-target delivery. For structured logs this
- * is the assistant narration (which carries any publish-block markers),
- * falling back to raw stdout/system text; for old terminal logs it's the
- * ANSI-stripped stdout — matching the pre-structured behaviour.
+ * The run's textual output for publish-target delivery, one entry per message.
+ * For structured logs this is the assistant narration (which carries any
+ * publish-block markers), falling back to raw stdout/system text; for old
+ * terminal logs it's the ANSI-stripped stdout — matching the pre-structured
+ * behaviour.
  */
-export function readRunOutputText(runId: string): string {
+export function readRunOutputMessages(runId: string): string[] {
   const log = readRunLog(runId)
   if (log.format === 'events') {
     const assistant = log.events
       .filter((e) => e.kind === 'assistant' && e.text)
       .map((e) => e.text!.trim())
       .filter(Boolean)
-      .join('\n')
-    if (assistant) return assistant
+    if (assistant.length > 0) return assistant
     return log.events
       .filter((e) => e.kind === 'raw' && e.text)
       .map((e) => stripAnsi(e.text!).trim())
       .filter(Boolean)
-      .join('\n')
   }
   return log.entries
     .filter((e) => e.stream === 'stdout')
     .map((e) => stripAnsi(e.chunk).trim())
     .filter(Boolean)
-    .join('\n')
 }

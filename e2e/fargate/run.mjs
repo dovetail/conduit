@@ -11,8 +11,8 @@
  *      parallel agents, same-agent rejection, cleanup/secret/ARN asserts
  *   2. drive-restart.mjs — gated reconnect markers, abrupt SIGKILL of the
  *      server, replacement process with the same DB/data/token/state
- *   3. drive-shutdown.mjs — leave a long run live, then SIGTERM the
- *      replacement and assert every simulated task is STOPPED
+ *   3. drive-shutdown.mjs — leave a long run live, SIGTERM the server, assert
+ *      its simulated task keeps running and a replacement adopts the run
  *   4. drive-reconnect-expiry.mjs — keep the endpoint down past an injected
  *      short reconnect window; worker exits nonzero; replacement records the
  *      reconnect-timeout diagnostic
@@ -44,6 +44,7 @@ const DB_NAME = process.env.CONDUIT_E2E_DB || 'conduit_e2e_fargate'
 const TOKEN = 'e2e-worker-token'
 const SERVER_URL = `ws://localhost:${PORT}/ws/worker`
 const RESTART_TIMEOUT_MS = 4000
+const SHUTDOWN_TIMEOUT_MS = 60_000
 const EXPIRY_TIMEOUT_MS = 1200
 
 function readState(stateFile) {
@@ -158,12 +159,20 @@ async function main() {
     }
     restartDriver = undefined
 
-    console.log('[e2e] Running server-shutdown cleanup scenario')
-    exitCode = await runDriver(path.join(repoRoot, 'e2e/fargate/drive-shutdown.mjs'), driverEnv)
+    console.log('[e2e] Running server-shutdown handover scenario')
+    // A window long enough to outlast a graceful exit plus the replacement's boot.
+    await stopProcess(server)
+    server = startServer(SHUTDOWN_TIMEOUT_MS)
+    await waitForOutput(server, 'running at')
+    const prep = startLoggedProcess('shutdown-prep', 'node', [path.join(repoRoot, 'e2e/fargate/drive-shutdown.mjs')], {
+      env: driverEnv,
+    })
+    exitCode = await waitForExit(prep, 60_000)
     if (exitCode !== 0) throw new Error('shutdown-prep failed')
+    const [, adoptRunId, adoptAgentId] = /SHUTDOWN_PREP_READY runId=(\S+) agentId=(\S+)/.exec(prep.getOutput()) ?? []
+    if (!adoptRunId) throw new Error('shutdown-prep did not report its run id')
 
-    const beforeStop = readState(stateFile)
-    const liveBefore = runningCount(beforeStop)
+    const liveBefore = runningCount(readState(stateFile))
     if (liveBefore < 1) {
       throw new Error(`expected a live simulated task before server shutdown, found ${liveBefore}`)
     }
@@ -173,12 +182,25 @@ async function main() {
 
     const after = readState(stateFile)
     const liveAfter = runningCount(after)
-    if (liveAfter !== 0) {
-      console.error(`[e2e] FAIL  shutdown: simulated tasks still running (${liveAfter})`)
+    if (liveAfter !== liveBefore) {
+      console.error(`[e2e] FAIL  shutdown: ${liveBefore - liveAfter} started task(s) were stopped`)
       console.error(JSON.stringify(after, null, 2))
-      throw new Error('shutdown: simulated tasks still running')
+      throw new Error('shutdown: started tasks did not survive a graceful server shutdown')
     }
-    console.log('[e2e] PASS  shutdown: every started task stopped')
+    console.log('[e2e] PASS  shutdown: started task kept running through SIGTERM')
+
+    server = startServer(SHUTDOWN_TIMEOUT_MS)
+    await waitForOutput(server, 'running at')
+    exitCode = await runDriver(path.join(repoRoot, 'e2e/fargate/drive-shutdown.mjs'), {
+      ...driverEnv,
+      SHUTDOWN_ADOPT_RUN_ID: adoptRunId,
+      SHUTDOWN_ADOPT_AGENT_ID: adoptAgentId,
+    })
+    if (exitCode !== 0) throw new Error('shutdown: replacement server did not adopt the run')
+    // Clear the survivor so it cannot dial into the expiry scenario's server.
+    await killAbrupt(server)
+    server = undefined
+    killRecordedTasks(stateFile)
 
     console.log('[e2e] Running reconnect-expiry scenario')
     server = startServer(EXPIRY_TIMEOUT_MS)

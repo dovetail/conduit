@@ -71,7 +71,12 @@ can still be adopted), `worker:heartbeat` (30s lease with active run ids),
 `run:started`, `run:event` (batched), `run:exit` — started/event/exit frames carry
 a per-run delivery sequence. Server→worker `run:assign` (RunSpec plus
 `reconnectTimeoutMs`), `run:ack` (highest contiguous sequence durably applied),
-`run:resume` (replay from the durable cursor), `run:reject`, `run:cancel`.
+`run:resume` (replay from the durable cursor), `run:reject`, `run:cancel`,
+`run:credentials` (a freshly minted GitHub App token every 45 minutes; the
+worker re-points the checkout's tokenized `origin` and the `gh` wrapper it puts
+on PATH, since installation tokens expire after an hour — older workers ignore it),
+`run:mcpAuth` (renewed MCP OAuth bearers keyed by server key; see MCP OAuth
+run-time injection — older workers ignore it).
 
 The worker keeps every frame on a process-local spool until the matching
 contiguous sequence is ACKed, then resends later frames in order after
@@ -129,10 +134,16 @@ up on schedule. One-shot (Fargate/EKS) workers do not exit after local process
 completion until `run:exit` is acknowledged. If the window expires, the worker
 cancels still-active execution and exits non-zero.
 
-**Graceful shutdown is not a delivery guarantee.** `SIGINT`/`SIGTERM` cancel
-active runs and exit; they do not wait for unacked frames to drain. During a
-rolling deploy of the *server*, in-flight remote runs survive because the worker
-reconnects to the replacement and replays from the durable cursor. A `SIGTERM`
+**Server shutdown hands runs over.** A graceful server `SIGTERM` fails only
+assignments that have not started; started remote/eks/fargate runs stay
+`running` in the database (`WorkerControlPlane.stop()` never touches their
+sinks) and the Fargate factory stops only tasks whose worker never started the
+run. During a rolling deploy of the *server*, in-flight remote runs therefore
+survive: the worker reconnects to the replacement and replays from the durable
+cursor.
+
+**Worker shutdown is not a delivery guarantee.** A worker's `SIGINT`/`SIGTERM`
+cancel active runs and exit; they do not wait for unacked frames to drain. A `SIGTERM`
 to the *worker* (pod eviction, spot reclaim, `docker stop`) ends its run: the
 spool is process-local, so anything unacked at that moment is lost and the run
 fails when the lease lapses. Drain worker pods by stopping new assignment and
@@ -194,7 +205,9 @@ are required. Optional: `CONDUIT_FARGATE_CONTAINER_NAME` (default `worker`),
 `ENABLED`), `CONDUIT_FARGATE_PLATFORM_VERSION`. AWS credentials/region: standard
 SDK chain. Bake `CONDUIT_WORKER_TOKEN` into the task definition via Secrets
 Manager (`secrets`), not `CONDUIT_FARGATE_WORKER_TOKEN` — the latter is a plain
-env override visible in DescribeTask output and is for dev only. The Fargate
+env override visible in DescribeTask output and is for dev only. Every task is
+2 vCPU; memory defaults to 8192 MiB and an agent's `workerMemoryMib` overrides
+it (4096–16384, steps of 1024 — 16384 is the top of the 2 vCPU range). The Fargate
 task stays running while the worker retries delivery; once the terminal ACK
 arrives the one-shot worker exits and the task reaches `STOPPED`. A replacement
 server does not need the old factory's in-memory task ARN for that normal path.
@@ -307,7 +320,9 @@ MCP servers that require OAuth use **server-mode OAuth 2.0 + PKCE** — Conduit 
 - `mcp:oauth:getStatus` — returns the current `McpOAuthStatus` (object with `connected: boolean`, `connectedByUserId?: string`, `connectedByName?: string`, `scope: 'user' | 'global'`, `expiresAt?: number`) for a given server URL + token owner.
 - `mcp:oauth:revoke` — deletes stored tokens for a given server URL + token owner.
 
-**Run-time injection**: `writeMcpConfig` (called when launching an agent run) reads the stored access token and injects an `Authorization: Bearer <token>` header into the MCP server configuration. Tokens are auto-refreshed before injection when a refresh token is available.
+**Run-time injection**: `buildRunMcpConfig` (called when launching an agent run) reads the stored access token and injects an `Authorization: Bearer <token>` header into the MCP server configuration. Tokens are auto-refreshed before injection when a refresh token is available.
+
+**Mid-run refresh**: some providers (Buildkite) issue hour-long access tokens, shorter than a long run, and the agent CLI reads its MCP config once. So the RunSpec lists OAuth-injected servers in `mcpOAuthServerKeys` (legacy `sse` excluded), and the worker fronts them with a loopback relay (`src/server/workers/mcpAuthRelay.ts`): the config the CLI sees points at `http://127.0.0.1:<port>/<key>` with a per-run random bearer, and the relay forwards each request upstream with the latest real token. The server re-resolves tokens every 5 minutes (`startMcpAuthRefresh` in `runner.ts`, renewing within 15 minutes of expiry) and sends only changed values through `handle.updateMcpAuth` (`run:mcpAuth` for remote workers). Older workers ignore the field and keep the launch-time bearer.
 
 **Files**:
 - `src/server/crypto.ts` — `encryptSecret` / `decryptSecret` (AES-256-GCM)
@@ -315,6 +330,63 @@ MCP servers that require OAuth use **server-mode OAuth 2.0 + PKCE** — Conduit 
 - `src/main/db/queries/oauthTokens.ts` — `getToken`, `saveToken`, `deleteToken`, `getTokenStatus`, `getConnectedByUserId` (owner-scoped, encrypted tokens)
 - `src/main/db/queries/mcpOAuthClients.ts` — `getClient`, `saveClient`, `deleteClient` (DCR client cache)
 - `src/renderer/hooks/useMcpOAuth.ts` — TanStack Query hooks for OAuth status + mutations
+
+## Conduit MCP Server
+
+Conduit itself is exposed as an MCP server so LLM clients (Claude Code, Cursor,
+…) can configure agents, investigate runs, and iterate on prompts without the UI.
+(Distinct from *MCP OAuth* above, where Conduit is the MCP **client**.)
+
+**Endpoint**: `POST /api/mcp` — stateless Streamable HTTP (`src/server/mcp/http.ts`);
+a fresh `McpServer` + transport per request, JSON responses, GET/DELETE → 405.
+Mounted before session middleware; cross-origin browser requests are 403'd.
+
+**Auth**: per-user personal access tokens (`cdt_…`), minted in Settings → MCP
+access (WS `mcpTokens:list|create|revoke`). Only the SHA-256 hash is stored
+(`mcp_access_tokens`). Scope `read` or `write` — write tools are not even
+registered for read tokens. The caller acts as the token's user with the normal
+ownership/sharing rules (`canAccessEntity` / `isEntityOwner`). Dev-bypass mode
+accepts tokenless requests as `dev-user` unless `CONDUIT_MCP_REQUIRE_TOKEN=true`.
+
+**Redaction**: secrets (env vars, MCP headers/env, URL credentials, publish-target
+and webhook secrets) are returned as `"[redacted]"`; sending `"[redacted]"` back
+on a write keeps the stored value.
+
+**Surface** (`src/server/mcp/`):
+- Tools — agents: `list_agents`, `get_agent`, `create_agent`, `update_agent`,
+ `delete_agent` (owner-only, requires `confirmName`), `set_agent_mcp_server`,
+ `remove_agent_mcp_server`, `check_mcp_server`; runs: `list_runs`, `get_run`,
+ `get_run_log` (filtered/paged digest), `start_run`, `stop_run`; triggers:
+ `list_triggers`, `create_trigger`, `update_trigger`, `delete_trigger`; workspace:
+ `get_conduit_status`, `list_repositories`, `sync_repository`,
+ `create_repository` (GitHub App PEM is write-only, encrypted at rest),
+ `test_repository_connection`, `list_publish_targets`, `list_global_mcp_servers`; prompts: `get_agent_prompt`,
+ `update_agent_prompt` (optional `expectedUpdatedAt`), `edit_agent_prompt`
+ (exact-substring replace), `list_prompt_revisions`, `get_prompt_revision`,
+ `restore_prompt_revision`, `get_prompt_performance`.
+- Resources — `conduit://agents/{agentId}`, `conduit://agents/{agentId}/prompt`,
+ `conduit://runs/{runId}`, `conduit://runs/{runId}/log`.
+- Prompts — `investigate-run`, `improve-agent-prompt`, `triage-failures`, `design-agent`.
+
+**Prompt history**: every prompt change (UI or MCP) is recorded in
+`prompt_revisions` (`src/main/db/queries/promptRevisions.ts`); the first change
+also stores a `baseline`; consecutive UI autosaves by the same user within 10
+minutes coalesce. MCP writes broadcast `entity:changed` so open UIs refresh
+(the AgentEditor re-syncs its draft only when no save is pending).
+
+**Connect**:
+```bash
+claude mcp add --transport http conduit http://localhost:7456/api/mcp --header "Authorization: Bearer cdt_…"
+# stdio-only clients: relay via the bridge
+CONDUIT_MCP_URL=http://localhost:7456/api/mcp CONDUIT_MCP_TOKEN=cdt_… npm run mcp:stdio
+```
+
+**Env**: `CONDUIT_MCP_ENABLED` (default on; `false` disables `/api/mcp`),
+`CONDUIT_MCP_REQUIRE_TOKEN` (force tokens in dev bypass), bridge-side
+`CONDUIT_MCP_URL` / `CONDUIT_MCP_TOKEN`.
+
+**Tests**: unit + in-memory SDK client tests in `src/server/mcp/*.test.ts`;
+`npm run e2e:mcp` drives a live server over HTTP and the stdio bridge.
 
 ## Ownership & Sharing
 

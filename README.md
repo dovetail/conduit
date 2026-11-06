@@ -187,6 +187,16 @@ By default each run gets an ephemeral temp workspace, deleted after the run. Two
 
 Agent-specific and global MCP servers are merged before each run (agent config wins on key conflict). `${ENV_VAR}` placeholders in `env` and `args` are expanded from the server's process environment, and OAuth tokens are injected as `Authorization: Bearer` headers automatically. `npm run seed` adds Sentry, Datadog, and Buildkite as global servers (idempotent) — set `SENTRY_ACCESS_TOKEN`, `DD_API_KEY`, `DD_APP_KEY`, `DD_SITE`, `BUILDKITE_API_TOKEN` first.
 
+### Driving Conduit from an MCP client
+
+Conduit is itself an MCP server at `POST /api/mcp`, so an LLM client can create and edit agents, start and debug runs, manage triggers, and iterate on prompts (with revision history and per-revision success rates) without the UI. Mint a token in **Settings → MCP access** (`read` or `write` scope), then:
+
+```bash
+claude mcp add --transport http conduit http://localhost:7456/api/mcp --header "Authorization: Bearer cdt_…"
+```
+
+Or in an `mcp.json`: `{ "mcpServers": { "conduit": { "url": "http://localhost:7456/api/mcp", "headers": { "Authorization": "Bearer cdt_…" } } } }`. For stdio-only clients, run the bridge: `CONDUIT_MCP_URL=http://localhost:7456/api/mcp CONDUIT_MCP_TOKEN=cdt_… npm run mcp:stdio`. In dev-bypass mode tokens are optional unless `CONDUIT_MCP_REQUIRE_TOKEN=true`; set `CONDUIT_MCP_ENABLED=false` to turn the endpoint off. Secrets are always returned as `[redacted]`.
+
 ### Publish targets
 
 Publish targets deliver agent output to external channels. Create targets in the **Publish Targets** panel and assign them to agents in the agent editor.

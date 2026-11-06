@@ -266,6 +266,8 @@ describe('WorkerControlPlane', () => {
     const handle = await handlePromise
     expect(handle.runId).toBe(SPEC.runId)
     expect(handle.workspacePath).toBe('/tmp/x')
+    await handle.updateRepoToken?.('ghs_fresh')
+    expect(await worker.next()).toEqual({ type: 'run:credentials', runId: SPEC.runId, repoToken: 'ghs_fresh' })
     await handle.cancel()
     expect(await worker.next()).toEqual({ type: 'run:cancel', runId: SPEC.runId })
   })
@@ -493,6 +495,93 @@ describe('WorkerControlPlane', () => {
     expect(events).toEqual(['from-owner'])
   })
 
+  it('takes over a half-open socket when the reconnect hello claims the active run (pause client read so ping gets no pong)', async () => {
+    // Short lease + probe so we can prove takeover beats lease expiry without waiting 75s.
+    await ctx.close()
+    ctx = await startServer({ leaseMs: 250, socketProbeTimeoutMs: 80 })
+
+    const owner = await connectWorker(ctx, { workerId: 'fargate-run-1' })
+    const events: string[] = []
+    let exit: { status: string; exitCode: number | null | undefined } | undefined
+    const handlePromise = ctx.controlPlane.assignTo('fargate-run-1', SPEC, {
+      onEvent: (ev) => events.push(ev.text ?? ev.stream),
+      onExit: (status, exitCode) => {
+        exit = { status, exitCode }
+      },
+    })
+    expect(await owner.next()).toMatchObject({ type: 'run:assign', spec: SPEC })
+    owner.ws.send(JSON.stringify({ type: 'run:started', runId: SPEC.runId, workspacePath: '/tmp/owner' }))
+    await handlePromise
+
+    // Half-open: TCP still up (server readyState OPEN, no `close`), but the client
+    // no longer reads — so the server's probe ping never gets a pong.
+    const ownerRaw = (owner.ws as unknown as { _socket: { pause: () => void } })._socket
+    ownerRaw.pause()
+
+    const replacement = await connectSocket(ctx)
+    const inbound: ServerToWorkerMessage[] = []
+    replacement.on('message', (data) => {
+      inbound.push(JSON.parse(data.toString()) as ServerToWorkerMessage)
+    })
+    sendJson(replacement, {
+      type: 'worker:hello',
+      workerId: 'fargate-run-1',
+      capabilities: { runners: ['claude'], version: 'test' },
+      activeRunIds: [SPEC.runId],
+      pendingRunIds: [SPEC.runId],
+    })
+
+    await vi.waitFor(() => {
+      expect(inbound.some((m) => m.type === 'run:resume' && m.runId === SPEC.runId)).toBe(true)
+    })
+    expect(replacement.readyState).toBe(WebSocket.OPEN)
+    expect(ctx.controlPlane.connectedWorkerCount).toBe(1)
+
+    sendJson(replacement, {
+      type: 'worker:heartbeat',
+      workerId: 'fargate-run-1',
+      activeRunIds: [SPEC.runId],
+    })
+    sendJson(replacement, {
+      type: 'run:event',
+      runId: SPEC.runId,
+      events: [{ kind: 'raw', stream: 'stdout', text: 'after-takeover' }],
+    })
+    await vi.waitFor(() => {
+      expect(events).toEqual(['after-takeover'])
+    })
+
+    // Keep the new socket's lease warm across several check intervals. Without
+    // takeover the half-open peer cannot heartbeat and checkLeases would fail
+    // the run; with takeover, heartbeats on the replacement socket keep it alive.
+    const keepAlive = setInterval(() => {
+      if (replacement.readyState === WebSocket.OPEN) {
+        sendJson(replacement, {
+          type: 'worker:heartbeat',
+          workerId: 'fargate-run-1',
+          activeRunIds: [SPEC.runId],
+        })
+      }
+    }, 50)
+    try {
+      await new Promise((r) => setTimeout(r, 400))
+      expect(exit).toBeUndefined()
+      expect(ctx.controlPlane.activeAssignmentCount).toBe(1)
+    } finally {
+      clearInterval(keepAlive)
+    }
+
+    sendJson(replacement, {
+      type: 'run:exit',
+      runId: SPEC.runId,
+      status: 'completed',
+      exitCode: 0,
+    })
+    await vi.waitFor(() => {
+      expect(exit).toEqual({ status: 'completed', exitCode: 0 })
+    })
+  })
+
   it('does not deliver events from one run onto another run\'s sink', async () => {
     const a = await connectWorker(ctx, { workerId: 'wa' })
     const b = await connectWorker(ctx, { workerId: 'wb' })
@@ -648,6 +737,21 @@ describe('WorkerControlPlane', () => {
     const handle = await retry
     expect(handle.workspacePath).toBe('/tmp/fresh')
   }, 5_000)
+
+  it('stop leaves a started run for the replacement server instead of failing it', async () => {
+    const worker = await connectWorker(ctx)
+    const events: string[] = []
+    const onExit = vi.fn()
+    const handlePromise = ctx.controlPlane.assign(SPEC, { onEvent: (ev) => events.push(ev.text ?? ''), onExit })
+    await worker.next() // run:assign
+    worker.ws.send(JSON.stringify({ type: 'run:started', runId: SPEC.runId }))
+    await handlePromise
+    const closed = expectClose(worker.ws)
+    ctx.controlPlane.stop()
+    expect(await closed).toMatchObject({ code: 1001 })
+    expect(onExit).not.toHaveBeenCalled()
+    expect(events).toEqual([])
+  })
 
   it('rejects pending assignTo waiters when the control plane stops', async () => {
     const pending = ctx.controlPlane.assignTo('ghost', SPEC, { onEvent: () => {}, onExit: () => {} }, 2_000)

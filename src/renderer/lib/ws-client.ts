@@ -69,6 +69,7 @@ export function createWsConduitClient(wsUrl: string): ConduitAPI {
   const repoSyncStatusListeners = new Set<(p: RepoSyncStatusPayload) => void>()
   const triggerFiredListeners = new Set<(p: TriggerFiredPayload) => void>()
   const shareChangeListeners = new Set<(p: { entityType: ShareableEntityType; entityId: string }) => void>()
+  const entityChangeListeners = new Set<(p: import('@shared/types').EntityChangedPayload) => void>()
   let idCounter = 0
 
   ws.onmessage = (event) => {
@@ -130,6 +131,10 @@ export function createWsConduitClient(wsUrl: string): ConduitAPI {
       } else if (msg.channel === 'share:changed') {
         shareChangeListeners.forEach((cb) =>
           cb(msg.payload as { entityType: ShareableEntityType; entityId: string })
+        )
+      } else if (msg.channel === 'entity:changed') {
+        entityChangeListeners.forEach((cb) =>
+          cb(msg.payload as import('@shared/types').EntityChangedPayload)
         )
       }
     }
@@ -257,6 +262,13 @@ export function createWsConduitClient(wsUrl: string): ConduitAPI {
       set: (runner: RunnerType, value: string) => invoke<void>('agentCreds:set', runner, value),
     },
 
+    mcpTokens: {
+      list: () => invoke<import('@shared/types').McpAccessToken[]>('mcpTokens:list'),
+      create: (input: import('@shared/types').McpAccessTokenInput) =>
+        invoke<import('@shared/types').CreatedMcpAccessToken>('mcpTokens:create', input),
+      revoke: (id: string) => invoke<void>('mcpTokens:revoke', id),
+    },
+
     maintenance: {
       sweep: () => invoke<import('@shared/types').SweepResult>('maintenance:sweep'),
       storageUsage: () =>
@@ -369,6 +381,13 @@ export function createWsConduitClient(wsUrl: string): ConduitAPI {
     ): (() => void) => {
       shareChangeListeners.add(cb)
       return () => shareChangeListeners.delete(cb)
+    },
+
+    onEntityChange: (
+      cb: (payload: import('@shared/types').EntityChangedPayload) => void
+    ): (() => void) => {
+      entityChangeListeners.add(cb)
+      return () => entityChangeListeners.delete(cb)
     },
   }
 }

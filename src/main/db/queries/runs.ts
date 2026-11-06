@@ -1,4 +1,4 @@
-import { and, eq, desc } from 'drizzle-orm'
+import { and, eq, desc, gte, inArray } from 'drizzle-orm'
 import { getDb } from '../index'
 import { runs } from '../schema'
 import type { ExecutionRun, RunStatus, TriggerContext } from '../../../shared/types'
@@ -28,6 +28,26 @@ export async function listRuns(agentId: string): Promise<ExecutionRun[]> {
     .from(runs)
     .where(eq(runs.agentId, agentId))
     .orderBy(desc(runs.startedAt))
+  return rows.map(rowToExecutionRun)
+}
+
+/** Most recent runs across the given agents, newest first, optionally filtered. */
+export async function listRecentRuns(opts: {
+  agentIds: string[]
+  status?: RunStatus
+  since?: number
+  limit: number
+}): Promise<ExecutionRun[]> {
+  if (opts.agentIds.length === 0) return []
+  const conds = [inArray(runs.agentId, opts.agentIds)]
+  if (opts.status) conds.push(eq(runs.status, opts.status))
+  if (opts.since != null) conds.push(gte(runs.startedAt, opts.since))
+  const rows = await getDb()
+    .select()
+    .from(runs)
+    .where(and(...conds))
+    .orderBy(desc(runs.startedAt))
+    .limit(opts.limit)
   return rows.map(rowToExecutionRun)
 }
 

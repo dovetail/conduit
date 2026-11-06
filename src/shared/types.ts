@@ -251,6 +251,12 @@ export interface AgentConfig {
    */
   memoryCapMb?: number
   /**
+   * Fargate task memory in MiB for this agent's runs. Valid range at the
+   * factory's 2 vCPU is 4096–16384 in steps of 1024. Unset uses 8192.
+   * Ignored by the local and EKS factories.
+   */
+  workerMemoryMib?: number
+  /**
    * When true, MCP servers configured in the repository (its `.mcp.json`) and the
    * host's personal connectors load alongside Conduit's managed MCPs. When false
    * (default), only Conduit's global + agent MCPs are used (`--strict-mcp-config`).
@@ -377,6 +383,57 @@ export interface GlobalMcpServer {
   ownerId?: string
   createdAt: number
   updatedAt: number
+}
+
+// ── Conduit MCP server ──────────────────────────────────────────────────────
+
+/**
+ * What a Conduit MCP access token may do. `read` exposes only the inspection
+ * tools (agents, runs, logs, prompts); `write` also exposes the tools that
+ * create, change, delete, or start things.
+ */
+export type McpAccessTokenScope = 'read' | 'write'
+
+/** HTTP path of Conduit's own MCP server (stateless Streamable HTTP). */
+export const CONDUIT_MCP_HTTP_PATH = '/api/mcp'
+
+/** A personal access token for Conduit's `/api/mcp` endpoint. Never carries the secret. */
+export interface McpAccessToken {
+  id: string
+  name: string
+  /** Leading characters of the token (e.g. `cdt_AbCd`) so users can tell tokens apart. */
+  tokenPrefix: string
+  scope: McpAccessTokenScope
+  /** Unix ms; undefined = never expires. */
+  expiresAt?: number
+  lastUsedAt?: number
+  createdAt: number
+}
+
+/** Returned once from token creation — the only time the plaintext token is visible. */
+export interface CreatedMcpAccessToken {
+  token: McpAccessToken
+  plaintext: string
+}
+
+export interface McpAccessTokenInput {
+  name: string
+  scope: McpAccessTokenScope
+  /** Days until expiry; omit or 0 for a token that never expires. */
+  expiresInDays?: number
+}
+
+export type PromptRevisionSource = 'baseline' | 'ui' | 'mcp' | 'restore'
+
+/** One version of an agent's prompt, recorded whenever the prompt changes. */
+export interface PromptRevision {
+  id: string
+  agentId: string
+  prompt: string
+  source: PromptRevisionSource
+  note?: string
+  createdBy?: string
+  createdAt: number
 }
 
 // ── Repositories ────────────────────────────────────────────────────────────
@@ -552,6 +609,14 @@ export interface TriggerContext {
   }
 }
 
+/** Broadcast when an entity changes outside the browser (e.g. via the MCP server). */
+export interface EntityChangedPayload {
+  entity: 'agent' | 'trigger'
+  id: string
+  /** Owning agent, for triggers. */
+  agentId?: string
+}
+
 export interface TriggerFiredPayload {
   triggerId: string
   agentId: string
@@ -612,6 +677,13 @@ export interface ConduitAPI {
     getTimeouts: () => Promise<RunnerTimeouts>
     /** Set the acting user's background-task timeout for a runner, in seconds (0 = indefinite). */
     setTimeout: (runner: RunnerType, seconds: number) => Promise<void>
+  }
+  mcpTokens: {
+    /** The acting user's active (unrevoked) MCP access tokens. */
+    list: () => Promise<McpAccessToken[]>
+    /** Mint a token; the plaintext is returned once and never again. */
+    create: (input: McpAccessTokenInput) => Promise<CreatedMcpAccessToken>
+    revoke: (id: string) => Promise<void>
   }
   maintenance: {
     /** Run the data-directory sweeper once, now, and report what was removed. */
@@ -676,6 +748,7 @@ export interface ConduitAPI {
     list: () => Promise<Group[]>
   }
   onShareChange: (cb: (payload: { entityType: ShareableEntityType; entityId: string }) => void) => () => void
+  onEntityChange: (cb: (payload: EntityChangedPayload) => void) => () => void
 }
 
 declare global {

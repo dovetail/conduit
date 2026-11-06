@@ -11,6 +11,26 @@ import { getAllRepositoryIds } from '../main/db/queries/repositories'
 import { reporter } from './observability'
 import { deliveryCursorPath } from './runDeliveryLog'
 import type { SweepResult, StorageUsage } from '../shared/types'
+import {
+  classifyDiskUsage,
+  classifyDiskPressure,
+  formatDiskPressureMessage,
+  measureDiskPressure,
+  resolveDiskMinFreeBytes,
+  DISK_WARNING_FRACTION,
+  DISK_CRITICAL_FRACTION,
+  type DiskPressure,
+  type DiskPressureLevel,
+} from './diskPressure'
+
+export {
+  classifyDiskUsage,
+  classifyDiskPressure,
+  measureDiskPressure,
+  DISK_WARNING_FRACTION,
+  DISK_CRITICAL_FRACTION,
+}
+export type { DiskPressure, DiskPressureLevel }
 
 /**
  * Periodic + on-demand cleaner for the data directory.
@@ -625,45 +645,31 @@ export function warmStorageUsage(): void {
 // helpers surface fill level to the error reporter *before* that happens, so the
 // operator sees "80% full" instead of only the eventual crash.
 
-export type DiskPressureLevel = 'ok' | 'warning' | 'critical'
-export const DISK_WARNING_FRACTION = 0.8
-export const DISK_CRITICAL_FRACTION = 0.9
+const DISK_LEVEL_RANK: Record<DiskPressureLevel, number> = { ok: 0, warning: 1, critical: 2 }
 
-/** Bucket a used-space fraction (0–1) into an alerting level. */
-export function classifyDiskUsage(usedFraction: number): DiskPressureLevel {
-  if (usedFraction >= DISK_CRITICAL_FRACTION) return 'critical'
-  if (usedFraction >= DISK_WARNING_FRACTION) return 'warning'
-  return 'ok'
+/** Alert only when disk pressure rises to a higher level. Returning to a lower
+ *  level re-arms the next escalation so a later climb is reported again. */
+export function shouldEscalateDisk(previous: DiskPressureLevel, next: DiskPressureLevel): boolean {
+  return DISK_LEVEL_RANK[next] > DISK_LEVEL_RANK[previous]
 }
 
-export interface DiskPressure {
-  totalBytes: number
-  freeBytes: number
-  usedFraction: number
-}
+let lastDiskLevel: DiskPressureLevel = 'ok'
 
-/**
- * Real filesystem usage of the volume backing `dir`, via `statfs` (the actual
- * device capacity/free — unlike {@link estimateStorageUsage}, which only sizes
- * Conduit's own artifacts). `freeBytes` uses blocks available to an unprivileged
- * user. Never returns a fraction outside [0, 1].
- */
-export async function measureDiskPressure(dir: string = DATA_DIR): Promise<DiskPressure> {
-  const st = await fs.promises.statfs(dir)
-  const totalBytes = st.bsize * st.blocks
-  const freeBytes = st.bsize * st.bavail
-  const usedFraction =
-    totalBytes > 0 ? Math.min(1, Math.max(0, (totalBytes - freeBytes) / totalBytes)) : 0
-  return { totalBytes, freeBytes, usedFraction }
+/** Test helper: restore the module-level last-seen disk level to `ok`. */
+export function resetReportedDiskLevel(): void {
+  lastDiskLevel = 'ok'
 }
 
 /**
  * Measure the data volume and emit telemetry: always a breadcrumb (so any later
- * event carries the fill level), plus a warning/error `captureMessage` once the
- * volume crosses {@link DISK_WARNING_FRACTION}/{@link DISK_CRITICAL_FRACTION}.
- * Fire-and-forget; never throws.
+ * event carries the fill level), plus a warning/error `captureMessage` only when
+ * pressure escalates past {@link DISK_WARNING_FRACTION}/{@link DISK_CRITICAL_FRACTION}
+ * or the absolute reserve. Fire-and-forget; never throws.
  */
-export async function reportDiskPressure(dir: string = DATA_DIR): Promise<DiskPressure | null> {
+export async function reportDiskPressure(
+  dir: string = DATA_DIR,
+  minFreeBytes = resolveDiskMinFreeBytes()
+): Promise<DiskPressure | null> {
   let pressure: DiskPressure
   try {
     pressure = await measureDiskPressure(dir)
@@ -671,22 +677,22 @@ export async function reportDiskPressure(dir: string = DATA_DIR): Promise<DiskPr
     reporter.captureException(err, { tags: { component: 'dataDirSweeper', op: 'diskPressure' } })
     return null
   }
-  const level = classifyDiskUsage(pressure.usedFraction)
+  const level = classifyDiskPressure(pressure, minFreeBytes)
   const pct = Math.round(pressure.usedFraction * 100)
   const freeMb = Math.round(pressure.freeBytes / (1024 * 1024))
   reporter.addBreadcrumb({
     category: 'disk',
     message: `data volume ${pct}% used, ${freeMb} MB free`,
     level: level === 'critical' ? 'error' : level === 'warning' ? 'warning' : 'info',
-    data: { ...pressure, level },
+    data: { ...pressure, level, minFreeBytes },
   })
-  if (level !== 'ok') {
-    reporter.captureMessage(
-      `Conduit data volume ${pct}% full (${freeMb} MB free) — agent runs will fail with ENOSPC as it fills.`,
-      level === 'critical' ? 'error' : 'warning',
-      { tags: { component: 'dataDirSweeper', op: 'diskPressure', level }, extra: { ...pressure } }
-    )
+  if (shouldEscalateDisk(lastDiskLevel, level)) {
+    reporter.captureMessage(formatDiskPressureMessage(pressure, minFreeBytes), level === 'critical' ? 'error' : 'warning', {
+      tags: { component: 'dataDirSweeper', op: 'diskPressure', level },
+      extra: { ...pressure, minFreeBytes },
+    })
   }
+  lastDiskLevel = level
   return pressure
 }
 

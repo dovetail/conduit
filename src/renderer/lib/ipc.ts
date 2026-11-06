@@ -35,6 +35,9 @@ export const api = {
   get runners() {
     return getConduit().runners
   },
+  get mcpTokens() {
+    return getConduit().mcpTokens
+  },
   get agentCredentials() {
     return getConduit().agentCredentials
   },
@@ -104,5 +107,10 @@ export const api = {
     cb: (payload: { entityType: import('@shared/types').ShareableEntityType; entityId: string }) => void
   ): (() => void) => {
     return getConduit().onShareChange(cb)
+  },
+  onEntityChange: (
+    cb: (payload: import('@shared/types').EntityChangedPayload) => void
+  ): (() => void) => {
+    return getConduit().onEntityChange(cb)
   },
 }

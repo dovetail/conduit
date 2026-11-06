@@ -46,11 +46,14 @@ export async function saveToken(
   }
   const updateSet: Partial<typeof oauthTokens.$inferInsert> = {
     accessToken: values.accessToken,
-    refreshToken: values.refreshToken,
     expiresAt: values.expiresAt,
     tokenType: values.tokenType,
     scope: values.scope,
   }
+  // Preserve an existing refresh token when the new response omits one — common
+  // on reconnect exchanges and some refresh responses. Writing null here would
+  // permanently disable silent refresh (Linear then 401s until another full grant).
+  if (values.refreshToken !== null) updateSet.refreshToken = values.refreshToken
   if (connectedByUserId !== null) updateSet.connectedByUserId = connectedByUserId
   await getDb().insert(oauthTokens).values(values).onConflictDoUpdate({
     target: [oauthTokens.serverUrl, oauthTokens.tokenOwner],

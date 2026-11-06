@@ -49,6 +49,14 @@ const DEFAULT_EXIT_RETRY_INITIAL_DELAY_MS = 500
 /** Ceiling for the exponential backoff between those re-drives. */
 const DEFAULT_EXIT_RETRY_MAX_DELAY_MS = 15_000
 
+/**
+ * How long to wait for a WebSocket pong when probing whether a socket that still
+ * holds assignments is alive. A half-open peer never answers; a live `ws` client
+ * pongs immediately. Kept short so a reconnecting worker can take over well
+ * inside `WORKER_LEASE_MS`. Tests may override via `socketProbeTimeoutMs`.
+ */
+const DEFAULT_SOCKET_PROBE_TIMEOUT_MS = 300
+
 function parsePositiveMs(raw: string | undefined, fallback: number): number {
   const n = Number(raw)
   return Number.isFinite(n) && n > 0 ? n : fallback
@@ -85,6 +93,11 @@ export interface WorkerControlPlaneOptions {
   exitRetryInitialDelayMs?: number
   /** Ceiling for that backoff (default 15000). */
   exitRetryMaxDelayMs?: number
+  /**
+   * Ping/pong wait when deciding whether a duplicate-identity hello may take
+   * over a socket that still holds assignments. Tests inject a short value.
+   */
+  socketProbeTimeoutMs?: number
   /** Reconstruct a binding when a reconnecting worker reports a run this process does not hold. */
   recoverRun?: RecoverRun
   /** Tests inject a gated writer to prove per-run serialize-during-fsync. */
@@ -205,6 +218,7 @@ export class WorkerControlPlane {
   private readonly runLogMaxBytes: number
   private readonly exitRetryInitialDelayMs: number
   private readonly exitRetryMaxDelayMs: number
+  private readonly socketProbeTimeoutMs: number
   private readonly recoverRun?: RecoverRun
   private readonly openLog: OpenDeliveryLog
   private nextAssignmentGeneration = 1
@@ -228,6 +242,7 @@ export class WorkerControlPlane {
     this.exitRetryInitialDelayMs =
       options?.exitRetryInitialDelayMs ?? DEFAULT_EXIT_RETRY_INITIAL_DELAY_MS
     this.exitRetryMaxDelayMs = options?.exitRetryMaxDelayMs ?? DEFAULT_EXIT_RETRY_MAX_DELAY_MS
+    this.socketProbeTimeoutMs = options?.socketProbeTimeoutMs ?? DEFAULT_SOCKET_PROBE_TIMEOUT_MS
     this.recoverRun = options?.recoverRun
     this.openLog = options?.openDeliveryLog ?? openDeliveryLog
     this.wss.on('connection', (ws) => this.onConnection(ws))
@@ -439,6 +454,15 @@ export class WorkerControlPlane {
       cancel: async () => {
         this.requestCancel(runId)
       },
+      // Best effort: a detached run misses this refresh and gets the next one.
+      updateRepoToken: async (token) => {
+        const a = this.runs.get(runId)
+        if (a) this.sendOn(a.ws, { type: 'run:credentials', runId, repoToken: token })
+      },
+      updateMcpAuth: async (auth) => {
+        const a = this.runs.get(runId)
+        if (a) this.sendOn(a.ws, { type: 'run:mcpAuth', runId, auth })
+      },
     }
   }
 
@@ -543,10 +567,42 @@ export class WorkerControlPlane {
         const existing = this.workers.get(msg.workerId)
         if (existing && existing.ws !== ws) {
           if (this.hasAssignmentsOn(existing.ws)) {
-            ctx.rejectSocket(4002, 'duplicate identity with active assignment')
-            break
+            const claimed = [...msg.activeRunIds, ...(msg.pendingRunIds ?? [])]
+            const mayTakeOver = this.claimsIntersectWorkerAssignments(msg.workerId, claimed)
+            if (!mayTakeOver) {
+              ctx.rejectSocket(4002, 'duplicate identity with active assignment')
+              break
+            }
+            const oldWs = existing.ws
+            const alive = await this.probeSocketAlive(oldWs)
+            if (ctx.closed()) break
+            // Re-read after the probe await — another hello may have moved the binding.
+            const current = this.workers.get(msg.workerId)
+            if (current?.ws === ws) {
+              // Already bound to this socket (racing hello completed); refresh below.
+            } else if (
+              alive &&
+              oldWs.readyState === WebSocket.OPEN &&
+              current?.ws === oldWs
+            ) {
+              ctx.rejectSocket(4002, 'duplicate identity with active assignment')
+              break
+            } else if (current?.ws === oldWs || !current) {
+              // Half-open / dead peer: move the identity onto this socket. Do not
+              // failRunsOfWorker — the reconnecting worker still owns the runs.
+              this.seizeWorkerSocket(msg.workerId, oldWs, ws)
+              console.warn(
+                `[worker-control] Worker ${msg.workerId} reclaimed half-open socket ` +
+                  `(claimed ${claimed.length} run id(s))`
+              )
+            } else {
+              // A different live socket already holds this identity.
+              ctx.rejectSocket(4002, 'duplicate identity with active assignment')
+              break
+            }
+          } else {
+            existing.ws.close(4000, 'replaced by new connection')
           }
-          existing.ws.close(4000, 'replaced by new connection')
         }
         ctx.workerId = msg.workerId
         this.workers.set(msg.workerId, {
@@ -826,7 +882,14 @@ export class WorkerControlPlane {
       this.scheduleExitRedrive(a)
       return
     }
-    if (Date.now() >= (a.exitRetryDeadline ?? 0)) {
+    const now = Date.now()
+    const deadline = a.exitRetryDeadline ?? 0
+    const step = a.exitRetryDelayMs ?? this.exitRetryInitialDelayMs
+    // The follow-up timer waits this long for the resent frame. Asking when
+    // less than that remains clamps the timer to a few milliseconds and rejects
+    // the delivery before the frame is read, so the worker's answer is dropped.
+    // Give up instead of requesting a frame this window can no longer accept.
+    if (!(now < deadline && deadline - now >= step)) {
       this.abandonTerminalDelivery(a)
       return
     }
@@ -1147,6 +1210,69 @@ export class WorkerControlPlane {
     return false
   }
 
+  /** True when any claimed run id is currently assigned to this workerId. */
+  private claimsIntersectWorkerAssignments(workerId: string, claimed: string[]): boolean {
+    if (claimed.length === 0) return false
+    const assigned = new Set<string>()
+    for (const a of this.runs.values()) {
+      if (a.workerId === workerId) assigned.add(a.spec.runId)
+    }
+    for (const id of claimed) {
+      if (assigned.has(id)) return true
+    }
+    return false
+  }
+
+  /**
+   * Ping the peer and wait briefly for a pong. Half-open TCP leaves readyState
+   * OPEN but never answers; live Node `ws` clients auto-pong.
+   */
+  private probeSocketAlive(ws: WebSocket): Promise<boolean> {
+    if (ws.readyState !== WebSocket.OPEN) return Promise.resolve(false)
+    return new Promise((resolve) => {
+      let settled = false
+      const finish = (alive: boolean): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        ws.off('pong', onPong)
+        resolve(alive)
+      }
+      const onPong = (): void => finish(true)
+      const timer = setTimeout(() => finish(false), this.socketProbeTimeoutMs)
+      ws.once('pong', onPong)
+      try {
+        ws.ping()
+      } catch {
+        finish(false)
+      }
+    })
+  }
+
+  /**
+   * Bind a reconnecting socket over a dead/half-open peer that still owns this
+   * workerId's assignments. Updates the registry before tearing down the old
+   * socket so its `close` handler does not detach or fail the runs.
+   */
+  private seizeWorkerSocket(workerId: string, oldWs: WebSocket, newWs: WebSocket): void {
+    for (const a of this.runs.values()) {
+      if (a.workerId !== workerId) continue
+      this.clearReconnectTimer(a)
+      a.ws = newWs
+    }
+    const worker = this.workers.get(workerId)
+    if (worker && worker.ws === oldWs) {
+      worker.ws = newWs
+      worker.lastHeartbeat = Date.now()
+    }
+    try {
+      // terminate: a half-open peer may never complete a clean close handshake.
+      oldWs.terminate()
+    } catch {
+      // already destroyed
+    }
+  }
+
   /** True when a prior attempt on this socket timed out (different generation). */
   private hasStaleSuppression(runId: string, ws: WebSocket, generation: number): boolean {
     for (const entry of this.ignoreNextStarted) {
@@ -1221,6 +1347,12 @@ export class WorkerControlPlane {
     }
   }
 
+  /**
+   * Server shutdown. Runs not yet started fail. Started runs are left
+   * `running` in the database without touching their sinks: their workers
+   * reconnect to the replacement server, which adopts them from the durable
+   * cursor (or fails them once the reconnect window lapses).
+   */
   stop(): void {
     clearInterval(this.leaseTimer)
     for (const waiter of [...this.waiters.values()]) {
@@ -1236,12 +1368,9 @@ export class WorkerControlPlane {
       } else {
         clearTimeout(a.timeout)
         this.runs.delete(a.spec.runId)
-        a.sink.onEvent({
-          kind: 'raw',
-          stream: 'system',
-          text: `[Conduit: worker ${a.workerId} shutting down — failing this run.]`,
-        })
-        this.failSink(a, a.spec.runId)
+        console.log(
+          `[worker-control] Leaving run ${a.spec.runId} on worker ${a.workerId} for the replacement server`
+        )
       }
     }
     for (const w of this.workers.values()) {

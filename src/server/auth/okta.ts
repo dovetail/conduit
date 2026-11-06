@@ -1,5 +1,6 @@
 import { getOktaConfig, isAuthEnabled } from './config'
 import type { User } from '../../shared/types'
+import { oktaGroupDisplayName, oktaUserDisplayName } from './oktaDisplay'
 
 // openid-client v6 is ESM-only, so we must use dynamic import
 type OpenIDClient = typeof import('openid-client')
@@ -140,13 +141,19 @@ export async function searchOktaUsers(query: string): Promise<User[]> {
 
   const data = (await res.json()) as Array<{
     id: string
-    profile: { firstName?: string; lastName?: string; email?: string; login?: string }
+    profile: {
+      displayName?: string
+      firstName?: string
+      lastName?: string
+      email?: string
+      login?: string
+    }
   }>
 
   return data.map((u) => ({
     id: u.id,
     email: u.profile.email || u.profile.login || '',
-    name: [u.profile.firstName, u.profile.lastName].filter(Boolean).join(' ') || u.profile.email || u.id,
+    name: oktaUserDisplayName(u.profile, u.id),
     lastLoginAt: 0,
     createdAt: 0,
   }))
@@ -204,17 +211,19 @@ export async function resolveOktaUserName(id: string): Promise<ResolvedOktaIdent
 
   const data = (await oktaApiGet(`/api/v1/users/${encodeURIComponent(id)}`)) as {
     id: string
-    profile?: { firstName?: string; lastName?: string; email?: string; login?: string }
+    profile?: {
+      displayName?: string
+      firstName?: string
+      lastName?: string
+      email?: string
+      login?: string
+    }
   } | null
 
   const value: ResolvedOktaIdentity | null = data
     ? {
         id: data.id,
-        name:
-          [data.profile?.firstName, data.profile?.lastName].filter(Boolean).join(' ') ||
-          data.profile?.email ||
-          data.profile?.login ||
-          data.id,
+        name: oktaUserDisplayName(data.profile, data.id),
         email: data.profile?.email || data.profile?.login || undefined,
       }
     : null
@@ -234,7 +243,7 @@ export async function resolveOktaGroupName(id: string): Promise<ResolvedOktaIden
   } | null
 
   const value: ResolvedOktaIdentity | null = data
-    ? { id: data.id, name: data.profile?.name || data.id }
+    ? { id: data.id, name: oktaGroupDisplayName(data.profile, data.id) }
     : null
 
   groupNameCache.set(id, { value, expiresAt: Date.now() + NAME_CACHE_TTL_MS })

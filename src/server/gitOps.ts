@@ -255,6 +255,7 @@ export async function fetchRepo(
 export function isDiskFullError(message: string): boolean {
   return (
     /no space left on device|\bENOSPC\b/i.test(message) ||
+    /not enough disk space/i.test(message) ||
     /failed to write new configuration file/i.test(message)
   )
 }

@@ -1,6 +1,6 @@
 import * as fs from 'fs'
 import * as path from 'path'
-import type { ExecutionRun, RunEvent, TriggerContext, RunnerType } from '../shared/types'
+import type { ExecutionRun, RunEvent, TriggerContext, RunnerType, Repository } from '../shared/types'
 import type { RunSpec, WorkspaceSpec, WorkerEventSink, WorkerHandle } from '../shared/worker'
 import { summarizeEvent } from '../shared/runEvents'
 import { createRun, updateRun, updateRunIfRunning, getRunningRunForAgent } from '../main/db/queries/runs'
@@ -10,12 +10,18 @@ import { getCredentialValue } from '../main/db/queries/agentCredentials'
 import { getRunnerTimeout } from '../main/db/queries/runnerSettings'
 import { resolveBgTaskTimeoutSeconds, bgTaskTimeoutEnvEntry } from './runnerTimeout'
 import { deleteWorkspace } from '../main/execution/workspace'
-import { buildMcpConfigContent, deleteMcpConfig } from '../main/utils/mcp'
+import {
+  buildRunMcpConfig,
+  deleteMcpConfig,
+  resolveRunMcpAuth,
+  RUN_MCP_REFRESH_INTERVAL_MS,
+  type RunMcpOAuthServer,
+} from '../main/utils/mcp'
 import { deleteClaudeConfig } from '../main/utils/claudeConfig'
 import { DEV_USER_ID } from './auth/config'
 import { LOGS_DIR } from '../main/utils/paths'
 import { removeWorktree } from './gitOps'
-import { buildRunFailureReport } from './runFailure'
+import { buildRunFailureReport, failedStartLastLine, isDerivedWorkerControlFailure } from './runFailure'
 import { resolvePushCredential, githubTokenEnvEntry } from './githubApp'
 import { publishRunResult } from './publisher'
 import { buildTriggeredPrompt } from './triggers/promptBuilder'
@@ -214,6 +220,8 @@ export interface RunOrchestration {
   emitSystemMessage: (text: string) => void
   register: (handle: WorkerHandle) => void
   abort: () => void
+  /** Run `cb` once the run leaves the active set (terminal state or abort). */
+  onFinalized: (cb: () => void) => void
 }
 
 /**
@@ -290,6 +298,10 @@ export function createRunOrchestration(opts: {
   })
 
   let finalized = false
+  const finalizers: Array<() => void> = []
+  const runFinalizers = (): void => {
+    for (const cb of finalizers.splice(0)) cb()
+  }
   let workspacePath: string | undefined = run.workspacePath
   let isEphemeral = false
   let worktreeClonePath: string | undefined = undefined
@@ -334,6 +346,7 @@ export function createRunOrchestration(opts: {
     }
 
     activeProcesses.delete(runId)
+    runFinalizers()
 
     if (eventBuffer.length > 0) {
       const events = eventBuffer.splice(0)
@@ -355,7 +368,17 @@ export function createRunOrchestration(opts: {
           endedAt,
           durationMs,
         })
-        await publishRunResult(agentId, finalRun)
+        const outcomes = (await publishRunResult(agentId, finalRun)) ?? []
+        for (const outcome of outcomes) {
+          if (outcome.ok) {
+            appendRunLog(runId, `Published to ${outcome.targetName}`)
+            continue
+          }
+          appendRunLog(runId, `⚠️  Publish to ${outcome.targetName} failed: ${outcome.error}`)
+          reporter.captureException(new Error(`Publish to ${outcome.targetName} failed: ${outcome.error}`), {
+            tags: { component: 'runner', op: 'publishRunResult', runId, runner },
+          })
+        }
       }
     } catch (err) {
       console.error(`[server/runner] Publish failed for run ${runId}:`, err)
@@ -383,7 +406,7 @@ export function createRunOrchestration(opts: {
       })
     },
     onExit: (status, exitCode) => {
-      if (status === 'failed' && !finalized) {
+      if (status === 'failed' && !finalized && !isDerivedWorkerControlFailure(lastLine)) {
         const report = buildRunFailureReport({ runId, runner, exitCode, lastLine })
         reporter.captureMessage(report.message, report.level, report.ctx)
       }
@@ -409,9 +432,86 @@ export function createRunOrchestration(opts: {
     },
     abort: () => {
       finalized = true
+      runFinalizers()
       logStream.end()
     },
+    onFinalized: (cb) => {
+      finalizers.push(cb)
+    },
   }
+}
+
+/** GitHub App installation tokens last an hour; replace them well before that. */
+export const REPO_TOKEN_REFRESH_MS = 45 * 60_000
+
+/**
+ * Periodically mint a fresh repo token and hand it to the worker, so `git push`
+ * and `gh` keep working in runs that outlive the token they started with.
+ */
+export function startRepoTokenRefresh(
+  runId: string,
+  repo: Pick<Repository, 'id' | 'url' | 'authMethod'>,
+  handle: WorkerHandle,
+  orch: Pick<RunOrchestration, 'emitSystemMessage' | 'onFinalized'>,
+  intervalMs = REPO_TOKEN_REFRESH_MS
+): void {
+  const refresh = async (): Promise<void> => {
+    try {
+      const { token, error } = await resolvePushCredential(repo)
+      if (error) throw error
+      if (token) await handle.updateRepoToken?.(token)
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err))
+      orch.emitSystemMessage(
+        `⚠️  Could not refresh GitHub credentials: ${e.message}\n` +
+          `   "git push" and "gh" will fail once the current token expires.\n`
+      )
+      reporter.captureException(e, {
+        tags: { component: 'runner', op: 'refreshRepoToken', runId, repoId: repo.id },
+      })
+    }
+  }
+  const timer = setInterval(() => void refresh(), intervalMs)
+  timer.unref?.()
+  orch.onFinalized(() => clearInterval(timer))
+}
+
+/**
+ * Keep a run's OAuth MCP bearers current: re-resolve them (renewing any near
+ * expiry) and hand the worker only the values that changed.
+ */
+export function startMcpAuthRefresh(
+  runId: string,
+  servers: RunMcpOAuthServer[],
+  handle: WorkerHandle,
+  orch: Pick<RunOrchestration, 'emitSystemMessage' | 'onFinalized'>,
+  intervalMs = RUN_MCP_REFRESH_INTERVAL_MS
+): void {
+  const sent = new Map(servers.map((s) => [s.key, s.authorization]))
+  let warned = false
+  const refresh = async (): Promise<void> => {
+    try {
+      const auth = await resolveRunMcpAuth(servers)
+      const changed = Object.fromEntries(Object.entries(auth).filter(([key, value]) => sent.get(key) !== value))
+      if (Object.keys(changed).length === 0) return
+      await handle.updateMcpAuth?.(changed)
+      for (const [key, value] of Object.entries(changed)) sent.set(key, value)
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err))
+      // Retried every interval; one log line per run is enough to explain later 401s.
+      if (!warned) {
+        warned = true
+        orch.emitSystemMessage(
+          `⚠️  Could not refresh MCP OAuth credentials: ${e.message}\n` +
+            `   MCP servers will reject calls once their current token expires.\n`
+        )
+      }
+      reporter.captureException(e, { tags: { component: 'runner', op: 'refreshMcpAuth', runId } })
+    }
+  }
+  const timer = setInterval(() => void refresh(), intervalMs)
+  timer.unref?.()
+  orch.onFinalized(() => clearInterval(timer))
 }
 
 /**
@@ -454,10 +554,13 @@ export async function startRunServer(
   // token). Tokenizes the checkout's `origin` for `git push` AND is handed to
   // the agent as GH_TOKEN so the `gh` CLI authenticates as the same identity.
   let pushToken: string | undefined
+  // Set for GitHub App repos, whose installation tokens expire mid-run.
+  let refreshableRepo: Pick<Repository, 'id' | 'url' | 'authMethod'> | undefined
 
   if (agent.repositoryId) {
     const repo = await getRepository(agent.repositoryId)
     if (!repo) throw new Error(`Repository ${agent.repositoryId} not found`)
+    if (repo.authMethod === 'githubapp') refreshableRepo = repo
     if (factory.kind === 'local' && repo.syncStatus !== 'ready') {
       // The local factory worktrees off the server-side bare clone, so it must
       // be synced; remote factories clone from the remote and don't use it.
@@ -535,14 +638,13 @@ export async function startRunServer(
   //    can't be decrypted). Since the run record already exists, an unhandled
   //    throw here would leave it orphaned as "running" forever with no log — so
   //    on failure we mark it failed, record why in its log, and surface it.
-  //    Skipped for cursor: cursor-agent has no --mcp-config flag (it loads MCPs
-  //    from the workspace's .cursor/mcp.json and the user's global Cursor
-  //    config), so Conduit-managed MCP injection doesn't apply to that runner.
-  let mcpConfigContent: string | undefined
+  let mcpConfigContent: string
+  let mcpOAuthServers: RunMcpOAuthServer[]
   try {
-    if (agent.runner !== 'cursor') {
-      mcpConfigContent = await buildMcpConfigContent(agent.mcpConfig, actingUserId)
-    }
+    ;({ content: mcpConfigContent, oauthServers: mcpOAuthServers } = await buildRunMcpConfig(
+      agent.mcpConfig,
+      actingUserId
+    ))
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     appendRunLog(runId, `Failed to prepare run: ${msg}`)
@@ -566,16 +668,6 @@ export async function startRunServer(
     )
   }
 
-  // Cursor loads MCPs from the workspace/user config, not from Conduit's
-  // injected config — say so up front rather than silently ignoring them.
-  if (agent.runner === 'cursor' && Object.keys(agent.mcpConfig?.mcpServers ?? {}).length > 0) {
-    orch.emitSystemMessage(
-      `[Conduit: cursor-agent has no --mcp-config flag, so this agent's configured MCP ` +
-        `servers are not injected. Cursor loads MCPs from the workspace .cursor/mcp.json ` +
-        `and the user's global Cursor config.]`
-    )
-  }
-
   // 6. Build the fully-resolved RunSpec and hand execution to the worker
   //    factory. Events stream back through the sink into the pipeline above.
   const spec: RunSpec = {
@@ -587,7 +679,9 @@ export async function startRunServer(
     prompt: triggerContext ? buildTriggeredPrompt(agent.prompt, triggerContext) : agent.prompt,
     env: await buildRunnerEnvOverlay(agent, startedBy, pushToken),
     mcpConfigContent,
+    mcpOAuthServerKeys: mcpOAuthServers.length ? mcpOAuthServers.map((s) => s.key) : undefined,
     strictMcpConfig: agent.runner === 'claude' ? !agent.enableRepoMcps : undefined,
+    workerMemoryMib: agent.workerMemoryMib,
     workspace: workspaceSpec,
   }
 
@@ -598,14 +692,25 @@ export async function startRunServer(
     // Rethrown to the caller (WS 'runs:start' handler / triggerService), which
     // reports it — capturing here too would double-report. The factory rolls
     // back any workspace/config it created before throwing.
+    // Persist lastLine so a failed start (disk full, clone error) is visible in
+    // run history instead of a blank Failed row — cron retries used to pile up
+    // unlabeled failures while the volume was exhausted.
+    const lastLine = failedStartLastLine(err)
+    orch.emitSystemMessage(lastLine)
     cleanupRun(runId, undefined, false)
     orch.abort()
-    await updateRun(runId, { status: 'failed', endedAt: Date.now() })
+    await updateRun(runId, { status: 'failed', endedAt: Date.now(), lastLine })
     broadcast('run:statusChange', { runId, status: 'failed' })
     throw err
   }
 
   orch.register(handle)
+  if (refreshableRepo && pushToken && handle.updateRepoToken) {
+    startRepoTokenRefresh(runId, refreshableRepo, handle, orch)
+  }
+  if (mcpOAuthServers.length && handle.updateMcpAuth) {
+    startMcpAuthRefresh(runId, mcpOAuthServers, handle, orch)
+  }
 
   // Record the resolved workspace path (worker-local for remote factories) and
   // the executing worker's identity.

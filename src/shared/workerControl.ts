@@ -19,6 +19,10 @@
  *   server → worker  run:resume        (replay from this durable cursor)
  *   server → worker  run:reject        (frame/assignment refused)
  *   server → worker  run:cancel        (stop request)
+ *   server → worker  run:credentials   (refreshed repo token for a live run;
+ *                                       workers that predate it ignore it)
+ *   server → worker  run:mcpAuth       (renewed MCP OAuth bearers for a live
+ *                                       run; workers that predate it ignore it)
  *
  * Lease semantics: if the server hears nothing from a worker (hello, heartbeat,
  * run:started, run:event, or run:exit) for longer than the lease window, it
@@ -129,9 +133,24 @@ export interface ServerRunRejectMessage {
   reason: string
 }
 
+export interface ServerRunCredentialsMessage {
+  type: 'run:credentials'
+  runId: string
+  repoToken: string
+}
+
+export interface ServerRunMcpAuthMessage {
+  type: 'run:mcpAuth'
+  runId: string
+  /** Renewed Authorization header values keyed by MCP server key. */
+  auth: Record<string, string>
+}
+
 export type ServerToWorkerMessage =
   | ServerRunAssignMessage
   | ServerRunCancelMessage
+  | ServerRunCredentialsMessage
+  | ServerRunMcpAuthMessage
   | ServerRunAckMessage
   | ServerRunResumeMessage
   | ServerRunRejectMessage

@@ -123,6 +123,38 @@ export const runnerSettings = pgTable('runner_settings', {
   pk: primaryKey({ columns: [table.userId, table.runner] }),
 }))
 
+// Personal access tokens for Conduit's own MCP endpoint (`/api/mcp`). Only the
+// SHA-256 hash of the token is stored; the plaintext is shown once at creation.
+export const mcpAccessTokens = pgTable('mcp_access_tokens', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull(),
+  name: text('name').notNull(),
+  tokenHash: text('token_hash').notNull(),
+  // First characters of the plaintext token, so users can tell tokens apart.
+  tokenPrefix: text('token_prefix').notNull(),
+  scope: text('scope').notNull(),
+  expiresAt: bigint('expires_at', { mode: 'number' }),
+  lastUsedAt: bigint('last_used_at', { mode: 'number' }),
+  revokedAt: bigint('revoked_at', { mode: 'number' }),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+}, (table) => ({
+  tokenHashIdx: uniqueIndex('mcp_access_tokens_token_hash').on(table.tokenHash),
+}))
+
+// Version history of agent prompts. Each row is the prompt as it stood after a
+// change (the first change of an agent also records a 'baseline' row holding the
+// pre-change prompt), so any earlier version can be inspected or restored.
+export const promptRevisions = pgTable('prompt_revisions', {
+  id: text('id').primaryKey(),
+  agentId: text('agent_id').notNull(),
+  prompt: text('prompt').notNull(),
+  // 'baseline' | 'ui' | 'mcp' | 'restore'
+  source: text('source').notNull(),
+  note: text('note'),
+  createdBy: text('created_by'),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+})
+
 export const agents = pgTable('agents', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
@@ -139,6 +171,7 @@ export const agents = pgTable('agents', {
   model: text('model'),
   bgTaskTimeoutSeconds: bigint('bg_task_timeout_seconds', { mode: 'number' }),
   memoryCapMb: bigint('memory_cap_mb', { mode: 'number' }),
+  workerMemoryMib: bigint('worker_memory_mib', { mode: 'number' }),
   enableRepoMcps: boolean('enable_repo_mcps').notNull().default(false),
   ownerId: text('owner_id'),
   // Soft-delete tombstone: unix ms when the agent was deleted, else null. We never
