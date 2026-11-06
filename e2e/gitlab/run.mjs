@@ -110,7 +110,15 @@ function connect(url) {
   let nextId = 1
   const pending = new Map()
   const statusHistory = new Map()
-  const statusWaiters = new Map()
+  // Callbacks are stored under a fixed method name. Looking one up by the
+  // run id from the socket and calling it reads to CodeQL as a method call
+  // whose name is user-controlled.
+  const statusWaiters = []
+  const deliverStatus = (runId, payload) => {
+    for (const waiter of statusWaiters) {
+      if (waiter.runId === runId) waiter.onStatus(payload)
+    }
+  }
   ws.on('message', (data) => {
     const msg = JSON.parse(data.toString())
     if (msg.type === 'response' || msg.type === 'error') {
@@ -120,10 +128,11 @@ function connect(url) {
       if (msg.type === 'error') p.reject(new Error(msg.error))
       else p.resolve(msg.result)
     } else if (msg.type === 'event' && msg.channel === 'run:statusChange') {
-      const h = statusHistory.get(msg.payload.runId) ?? []
-      h.push(msg.payload)
-      statusHistory.set(msg.payload.runId, h)
-      statusWaiters.get(msg.payload.runId)?.(msg.payload)
+      const runId = msg.payload?.runId
+      const history = statusHistory.get(runId) ?? []
+      history.push(msg.payload)
+      statusHistory.set(runId, history)
+      deliverStatus(runId, msg.payload)
     }
   })
   const invoke = (channel, ...args) =>
@@ -139,11 +148,13 @@ function connect(url) {
     if (seen) return Promise.resolve(seen)
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`run ${runId} did not finish`)), timeoutMs)
-      statusWaiters.set(runId, (p) => {
-        if (done(p)) {
+      statusWaiters.push({
+        runId,
+        onStatus(payload) {
+          if (!done(payload)) return
           clearTimeout(timer)
-          resolve(p)
-        }
+          resolve(payload)
+        },
       })
     })
   }
