@@ -38,7 +38,7 @@ env:
 steps:
   # ── Test gate — must pass before any image is built or deployed ─────────
   # Unit suites are DB-free (verified: full pass with Postgres stopped), so
-  # no services are needed. node:22-bookworm (not -slim) keeps a C toolchain
+  # no services are needed. node:24-bookworm (not -slim) keeps a C toolchain
   # available for any npm dep with a native build step.
   - label: ":test_tube: lint + typecheck + unit tests"
     key: test
@@ -52,7 +52,7 @@ steps:
     plugins:
       - docker#v5.12.0:
           platform: linux/arm64
-          image: "node:22-bookworm"
+          image: "node:24-bookworm"
           workdir: /app
     timeout_in_minutes: 10
 
