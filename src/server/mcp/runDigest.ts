@@ -1,5 +1,5 @@
 import { describeToolUse } from '../../shared/runEvents'
-import type { RunEvent, RunEventKind, RunLog } from '../../shared/types'
+import type { RunEvent, RunEventKind, RunLog, RunUsage } from '../../shared/types'
 
 /**
  * LLM-oriented views of a run log: a compact digest for triage, and a filtered,
@@ -50,6 +50,8 @@ export interface RunDigest {
   toolErrors: Array<{ index: number; toolName?: string; excerpt: string }>
   /** The CLI's terminal result marker, when present. */
   result?: { isError: boolean; text: string }
+  /** Conduit's end-of-run metering summary, when the run reached it. */
+  metering?: { durationMs?: number; usage?: RunUsage }
   /** Last few assistant messages, oldest first. */
   lastAssistantMessages: string[]
   /** Last few stderr/system lines, oldest first. */
@@ -68,6 +70,7 @@ export function digestRunLog(log: RunLog): RunDigest {
   const assistant: string[] = []
   const stderr: string[] = []
   let result: RunDigest['result']
+  let metering: RunDigest['metering']
 
   events.forEach((e, index) => {
     switch (e.kind) {
@@ -96,6 +99,9 @@ export function digestRunLog(log: RunLog): RunDigest {
       case 'result':
         result = { isError: !!e.isError, text: truncateText((e.text ?? '').trim(), 2000) }
         break
+      case 'metering':
+        metering = { durationMs: e.durationMs, usage: e.usage }
+        break
       case 'raw':
         if (e.stream === 'stderr' || e.stream === 'system') {
           for (const line of (e.text ?? '').split(/\r?\n/)) {
@@ -117,6 +123,7 @@ export function digestRunLog(log: RunLog): RunDigest {
     toolCalls,
     toolErrors,
     result,
+    metering,
     lastAssistantMessages: assistant,
     stderrTail: stderr,
   }

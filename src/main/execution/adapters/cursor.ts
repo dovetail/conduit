@@ -58,6 +58,7 @@ export function buildCursorArgs(opts: CursorArgsOptions = {}): string[] {
 
 import type { RunEventInit } from '../../../shared/types'
 import { capText } from '../../../shared/runEvents'
+import { parseRunUsage } from '../../../shared/usage'
 
 interface CursorContentBlock {
   type: string
@@ -196,7 +197,7 @@ export function parseCursorEvents(line: string): RunEventInit[] {
 
     case 'result': {
       const ok = event.subtype === 'success' && event.is_error !== true
-      return [{ kind: 'result', isError: !ok, text: ok ? 'Completed' : 'Failed' }]
+      return [{ kind: 'result', isError: !ok, text: ok ? 'Completed' : 'Failed', usage: parseRunUsage(event) }]
     }
 
     case 'system':

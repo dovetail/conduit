@@ -251,6 +251,7 @@ export async function initDb(): Promise<void> {
     ALTER TABLE runs ADD COLUMN IF NOT EXISTS last_line TEXT;
     ALTER TABLE runs ADD COLUMN IF NOT EXISTS worker_kind TEXT;
     ALTER TABLE runs ADD COLUMN IF NOT EXISTS worker_id TEXT;
+    ALTER TABLE runs ADD COLUMN IF NOT EXISTS usage TEXT;
     ALTER TABLE oauth_tokens ADD COLUMN IF NOT EXISTS token_owner TEXT NOT NULL DEFAULT '__global__';
     ALTER TABLE oauth_tokens ADD COLUMN IF NOT EXISTS connected_by_user_id TEXT;
 

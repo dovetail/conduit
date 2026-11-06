@@ -11,7 +11,7 @@ import { registerTool, type ToolEnv } from '../registry'
 import type { ExecutionRun } from '../../../shared/types'
 
 const statusSchema = z.enum(['running', 'completed', 'failed', 'stopped', 'launched'])
-const kindSchema = z.enum(['assistant', 'tool_use', 'tool_result', 'result', 'raw'])
+const kindSchema = z.enum(['assistant', 'tool_use', 'tool_result', 'result', 'metering', 'raw'])
 
 export function summarizeRun(run: ExecutionRun) {
   return {
@@ -21,6 +21,7 @@ export function summarizeRun(run: ExecutionRun) {
     startedAt: new Date(run.startedAt).toISOString(),
     endedAt: run.endedAt ? new Date(run.endedAt).toISOString() : undefined,
     durationMs: run.durationMs,
+    usage: run.usage,
     exitCode: run.exitCode,
     trigger: run.triggerContext?.triggerType ?? 'manual',
     lastLine: run.lastLine,
@@ -66,7 +67,7 @@ export function registerRunTools(server: McpServer, env: ToolEnv): void {
     name: 'get_run',
     title: 'Get run',
     description:
-      'One run with a triage digest: status, timing, trigger, failure classification (authentication, launch_config, disk_full, process_signal, worker_control, agent_error), tool-call counts, tool errors, the final result, the last assistant messages, and the stderr tail. Use get_run_log to page through the full log.',
+      'One run with a triage digest: status, timing, metering (cost and token usage as reported by the CLI, when available), trigger, failure classification (authentication, launch_config, disk_full, process_signal, worker_control, agent_error), tool-call counts, tool errors, the final result, the last assistant messages, and the stderr tail. Use get_run_log to page through the full log.',
     access: 'read',
     input: { runId: z.string() },
     run: async ({ runId }, { caller }) => {
@@ -90,7 +91,7 @@ export function registerRunTools(server: McpServer, env: ToolEnv): void {
     name: 'get_run_log',
     title: 'Read run log',
     description:
-      'Page through a run\'s log events. Filter by kind (assistant, tool_use, tool_result, result, raw), by a case-insensitive search string, or to errors only. Use tail to read the end of the log. Each event\'s text is truncated to maxCharsPerEvent.',
+      'Page through a run\'s log events. Filter by kind (assistant, tool_use, tool_result, result, metering, raw), by a case-insensitive search string, or to errors only. Use tail to read the end of the log. Each event\'s text is truncated to maxCharsPerEvent.',
     access: 'read',
     input: {
       runId: z.string(),

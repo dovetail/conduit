@@ -238,6 +238,35 @@ per-run configs post-run plus a startup sweep (6h grace). Runs record
 any workspace/config they created when `startRun` throws; `fixedDir` workspaces
 are local-only.
 
+## Run Metering
+
+Every run reports how long the session ran and, where the CLI provides it, what it
+cost. Types live in `src/shared/types.ts` (`RunUsage`); parsing/formatting in
+`src/shared/usage.ts`.
+
+- **Session time**: `ExecutionRun.durationMs` — Conduit wall-clock from run start to
+  finalize (includes workspace setup). Always set.
+- **CLI usage**: the adapters (`src/main/execution/adapters/`) attach `usage` to the
+  terminal `result` event via `parseRunUsage`: `costUsd`, `inputTokens`,
+  `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `numTurns`, `cliDurationMs`,
+  `apiDurationMs`. Claude Code reports all of these (`total_cost_usd` is the CLI's
+  own estimate); Cursor reports tokens/timing but no cost; Amp reports whatever its
+  Claude-compatible `result` carries. Fields a CLI doesn't report stay **unset** —
+  never estimated, never defaulted to 0.
+- **Persistence**: `runs.usage` (JSON TEXT) is written when the `result` event
+  arrives (so a server restart before the exit frame doesn't lose it) and again at
+  finalize. Because `usage` rides on `RunEventInit`, remote/EKS/Fargate workers need
+  no protocol change.
+- **Reporting**: at finalize the server emits a `metering` event (`durationMs`,
+  `usage`, `runner`, and a one-line `text`) through the normal event path — it lands
+  in the run's `logs/<runId>.jsonl`, the process stdout log (`{runId, agentId, kind:
+  "metering", …}` for log shippers), and the live `run:events` broadcast. The
+  `run:statusChange` broadcast, `ExecutionRun` (WS `runs:*`), and the MCP tools
+  (`list_runs`/`get_run` `usage`, `get_run` digest `metering`,
+  `get_prompt_performance` `totalCostUsd`/`avgCostUsd`) all expose it.
+- Stopped/failed runs report session time; usage only if the CLI got far enough to
+  emit a `result` event.
+
 ## Key Patterns
 
 **Adding a new entity type** — follow the publish targets pattern:
