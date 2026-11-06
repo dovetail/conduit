@@ -13,19 +13,37 @@ import type { RepoWriteData } from '../../main/db/queries/repositories'
 import type { McpCaller, McpDeps } from './context'
 
 // ── In-memory fake of the data layer ─────────────────────────────────────────
-const db = vi.hoisted(() => ({
-  agents: new Map<string, AgentConfig>(),
-  runs: new Map<string, ExecutionRun>(),
-  triggers: new Map<string, Trigger>(),
-  revisions: [] as PromptRevision[],
-  logs: new Map<string, RunLog>(),
-  repos: new Map<string, Repository>(),
-  /** repoId → stored (encrypted) GitHub App key. */
-  repoKeys: new Map<string, string>(),
-  /** agentId → userIds allowed to see it (besides the owner). */
-  sharedWith: new Map<string, string[]>(),
-  seq: 0,
-}))
+const { db, fingerprintPublicKey } = vi.hoisted(() => {
+  // require: vi.hoisted runs before ESM imports are bound.
+  const { createHash } = require('crypto') as typeof import('crypto')
+  /** Mirror of `sshKeyFingerprint` for the createRepository mock. */
+  function fingerprintPublicKey(publicKey: string): string | undefined {
+    const b64 = publicKey.trim().split(/\s+/)[1]
+    if (!b64) return undefined
+    const digest = createHash('sha256').update(Buffer.from(b64, 'base64')).digest('base64')
+    return `SHA256:${digest.replace(/=+$/, '')}`
+  }
+  return {
+    fingerprintPublicKey,
+    db: {
+      agents: new Map<string, AgentConfig>(),
+      runs: new Map<string, ExecutionRun>(),
+      triggers: new Map<string, Trigger>(),
+      revisions: [] as PromptRevision[],
+      logs: new Map<string, RunLog>(),
+      repos: new Map<string, Repository>(),
+      /** repoId → stored (encrypted) GitHub App key. */
+      repoKeys: new Map<string, string>(),
+      /** repoId → stored (encrypted) GitLab access token. */
+      repoGitlabTokens: new Map<string, string>(),
+      /** repoId → stored (encrypted) SSH private key. */
+      repoSshKeys: new Map<string, string>(),
+      /** agentId → userIds allowed to see it (besides the owner). */
+      sharedWith: new Map<string, string[]>(),
+      seq: 0,
+    },
+  }
+})
 
 function visible(agentId: string, userId: string): boolean {
   const a = db.agents.get(agentId)
@@ -88,25 +106,42 @@ vi.mock('../../main/db/queries/promptRevisions', () => ({
 vi.mock('../../main/db/queries/repositories', () => ({
   getRepository: async (id: string) => db.repos.get(id) ?? null,
   listRepositories: async () => [...db.repos.values()],
-  createRepository: async (data: RepoWriteData, ownerId: string) => {
-    const { githubPrivateKeyEnc, ...rest } = data
+  getRepositoryCredentials: async (id: string) => {
+    if (!db.repos.has(id)) return null
+    return {
+      githubAppId: db.repos.get(id)?.githubAppId,
+      githubPrivateKeyEnc: db.repoKeys.get(id),
+      gitlabTokenEnc: db.repoGitlabTokens.get(id),
+      sshPrivateKeyEnc: db.repoSshKeys.get(id),
+      sshKnownHosts: db.repos.get(id)?.sshKnownHosts,
+    }
+  },
+  createRepository: vi.fn(async (data: RepoWriteData, ownerId: string) => {
+    const { githubPrivateKeyEnc, gitlabTokenEnc, sshPrivateKeyEnc, ...rest } = data
     const repo: Repository = {
       ...rest,
       id: `repo-${++db.seq}`,
       ownerId,
       syncStatus: 'pending',
       hasGithubKey: !!githubPrivateKeyEnc,
+      hasGitlabToken: !!gitlabTokenEnc,
+      hasSshKey: !!sshPrivateKeyEnc,
+      sshPublicKey: data.sshPublicKey,
+      sshKeyFingerprint: data.sshPublicKey ? fingerprintPublicKey(data.sshPublicKey) : undefined,
       createdAt: 1,
       updatedAt: 1,
     }
     db.repos.set(repo.id, repo)
     if (githubPrivateKeyEnc) db.repoKeys.set(repo.id, githubPrivateKeyEnc)
+    if (gitlabTokenEnc) db.repoGitlabTokens.set(repo.id, gitlabTokenEnc)
+    if (sshPrivateKeyEnc) db.repoSshKeys.set(repo.id, sshPrivateKeyEnc)
     return repo
-  },
+  }),
 }))
 vi.mock('../crypto', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../crypto')>()),
-  encryptSecret: (s: string) => `enc:${s.length}`,
+  encryptSecret: (s: string) => `enc:${s}`,
+  decryptSecret: (s: string) => s.replace(/^enc:/, ''),
 }))
 vi.mock('../githubApp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../githubApp')>()),
@@ -141,6 +176,7 @@ vi.mock('../mcpServerProbe', () => ({
 import { createConduitMcpServer } from './server'
 import { resolveRepoToken } from '../githubApp'
 import { testRepoConnection } from '../gitOps'
+import { createRepository } from '../../main/db/queries/repositories'
 
 const PEM = '-----BEGIN RSA PRIVATE KEY-----\nMIIEsecretkeymaterial\n-----END RSA PRIVATE KEY-----\n'
 
@@ -181,7 +217,7 @@ async function call(client: Client, name: string, args: Record<string, unknown> 
 
 function seed() {
   db.agents.clear(); db.runs.clear(); db.triggers.clear(); db.logs.clear(); db.sharedWith.clear()
-  db.repos.clear(); db.repoKeys.clear()
+  db.repos.clear(); db.repoKeys.clear(); db.repoGitlabTokens.clear(); db.repoSshKeys.clear()
   db.revisions.length = 0
   db.agents.set('a1', {
     id: 'a1', name: 'Triage bot', runner: 'claude', prompt: 'Triage issues.\nBe brief.',
@@ -354,7 +390,7 @@ describe('Conduit MCP server', () => {
     expect(res.text).not.toContain('PRIVATE KEY')
     expect(res.text).not.toContain('secretkeymaterial')
     expect(db.repos.get(res.json.id)).toMatchObject({ ownerId: 'alice' })
-    expect(db.repoKeys.get(res.json.id)).toBe(`enc:${PEM.trim().length}`)
+    expect(db.repoKeys.get(res.json.id)).toBe(`enc:${PEM.trim()}`)
     expect(deps.triggerRepoSync).toHaveBeenCalledWith(res.json.id)
   })
 
@@ -391,6 +427,142 @@ describe('Conduit MCP server', () => {
     expect(failed.json).toMatchObject({ success: false, message: 'GitHub App (id 7) is not installed for acme/p' })
 
     expect((await call(client, 'test_repository_connection', { repositoryId: 'nope' })).text).toMatch(/not found or is not accessible/)
+  })
+
+  it('creates a GitLab repository, stores only the encrypted token, and rejects bad gitlab input', async () => {
+    const client = await connect(caller('alice', 'write'))
+    const token = 'glpat-super-secret-token'
+    const res = await call(client, 'create_repository', {
+      name: 'gitlab-proj',
+      url: 'https://gitlab.com/g/p.git',
+      authMethod: 'gitlab',
+      gitlabToken: token,
+    })
+    expect(res.isError).toBe(false)
+    expect(res.json).toMatchObject({
+      name: 'gitlab-proj',
+      authMethod: 'gitlab',
+      hasGitlabToken: true,
+      syncStatus: 'pending',
+    })
+    expect(res.text).not.toContain(token)
+    expect(createRepository).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authMethod: 'gitlab',
+        url: 'https://gitlab.com/g/p.git',
+        gitlabTokenEnc: `enc:${token}`,
+      }),
+      'alice'
+    )
+    expect(createRepository).toHaveBeenCalledWith(
+      expect.not.objectContaining({ gitlabToken: expect.anything() }),
+      'alice'
+    )
+    expect(db.repoGitlabTokens.get(res.json.id)).toBe(`enc:${token}`)
+    expect(deps.triggerRepoSync).toHaveBeenCalledWith(res.json.id)
+
+    expect(
+      (await call(client, 'create_repository', {
+        name: 'r',
+        url: 'https://gitlab.com/g/p.git',
+        authMethod: 'gitlab',
+      })).text
+    ).toMatch(/gitlabToken/)
+    expect(
+      (await call(client, 'create_repository', {
+        name: 'r',
+        url: 'https://gitlab.com/g/p.git',
+        authMethod: 'none',
+        gitlabToken: token,
+      })).text
+    ).toMatch(/only used with authMethod "gitlab"/)
+    expect(
+      (await call(client, 'create_repository', {
+        name: 'r',
+        url: 'git@gitlab.com:g/p.git',
+        authMethod: 'gitlab',
+        gitlabToken: token,
+      })).text
+    ).toMatch(/https:\/\/ clone URL/)
+  })
+
+  it('creates an SSH deploy-key repository (generate or supplied) and rejects bad sshkey input', async () => {
+    const client = await connect(caller('alice', 'write'))
+    const generated = await call(client, 'create_repository', {
+      name: 'ssh-gen',
+      url: 'git@gitlab.com:g/p.git',
+      authMethod: 'sshkey',
+      generateSshKey: true,
+    })
+    expect(generated.isError).toBe(false)
+    expect(generated.json.sshPublicKey).toMatch(/^ssh-ed25519 /)
+    expect(generated.json.sshKeyFingerprint).toMatch(/^SHA256:/)
+    expect(generated.json).toMatchObject({ authMethod: 'sshkey', hasSshKey: true })
+    expect(generated.text).not.toContain('PRIVATE KEY')
+    expect(db.repoSshKeys.get(generated.json.id)).toMatch(/^enc:/)
+    expect(deps.triggerRepoSync).toHaveBeenCalledWith(generated.json.id)
+
+    // Regression: ssh:// URLs carry a username; the old check rejected any URL with one.
+    const sshUrl = await call(client, 'create_repository', {
+      name: 'ssh-url',
+      url: 'ssh://git@gitlab.example.com:2222/g/p.git',
+      authMethod: 'sshkey',
+      generateSshKey: true,
+    })
+    expect(sshUrl.isError).toBe(false)
+    expect(sshUrl.json).toMatchObject({ authMethod: 'sshkey', hasSshKey: true })
+    expect(sshUrl.json.sshPublicKey).toMatch(/^ssh-ed25519 /)
+
+    expect(
+      (await call(client, 'create_repository', {
+        name: 'r',
+        url: 'git@gitlab.com:g/p.git',
+        authMethod: 'sshkey',
+        generateSshKey: true,
+        sshPrivateKey: '-----BEGIN OPENSSH PRIVATE KEY-----\nx\n-----END OPENSSH PRIVATE KEY-----',
+      })).text
+    ).toMatch(/Pass either sshPrivateKey or generateSshKey/)
+
+    expect(
+      (await call(client, 'create_repository', {
+        name: 'r',
+        url: 'https://gitlab.com/g/p.git',
+        authMethod: 'sshkey',
+        generateSshKey: true,
+      })).text
+    ).toMatch(/SSH deploy keys need an SSH clone URL/)
+
+    expect(
+      (await call(client, 'create_repository', {
+        name: 'r',
+        url: 'git@gitlab.com:g/p.git',
+        authMethod: 'sshkey',
+        sshPrivateKey: 'not-a-real-private-key',
+      })).text
+    ).toMatch(/Invalid SSH private key/)
+  })
+
+  it('tests a stored GitLab repository credential with oauth2 username', async () => {
+    const client = await connect(caller('alice', 'write'))
+    const token = 'glpat-connection-test'
+    const created = await call(client, 'create_repository', {
+      name: 'gl',
+      url: 'https://gitlab.com/g/p.git',
+      authMethod: 'gitlab',
+      gitlabToken: token,
+    })
+    const ok = await call(client, 'test_repository_connection', { repositoryId: created.json.id })
+    expect(ok.json).toEqual({
+      repositoryId: created.json.id,
+      success: true,
+      message: 'Connected — 3 branches found',
+    })
+    expect(testRepoConnection).toHaveBeenCalledWith('https://gitlab.com/g/p.git', {
+      token,
+      tokenUsername: 'oauth2',
+      env: {},
+    })
+    expect(ok.text).not.toContain(token)
   })
 
   it('starts runs attributed to the caller', async () => {
