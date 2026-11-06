@@ -51,22 +51,27 @@ FROM node:24-slim
 WORKDIR /app
 
 # git is required at runtime for repository sync (clone/fetch/worktree); curl
-# is needed to fetch the Cursor CLI installer below. git-lfs is required for
-# repos that store assets in git-LFS (e.g. a Yarn zero-install `.yarn/cache`):
-# without it, worktree checkouts contain LFS *pointer* files instead of content,
-# which breaks the agent's `yarn install`/build and stalls the run. `git lfs
-# install --system` registers the smudge/clean filters for every later git op.
+# fetches the Claude, Amp, and Cursor installers at the end of this stage.
+# git-lfs is required for repos that store assets in git-LFS (e.g. a Yarn
+# zero-install `.yarn/cache`): without it, worktree checkouts contain LFS
+# *pointer* files instead of content, which breaks the agent's `yarn install`
+# /build and stalls the run. `git lfs install --system` registers the
+# smudge/clean filters for every later git op.
 # No PID-1 wrapper (tini/dumb-init): the mode-aware entrypoint exec's node so
 # it remains PID 1 and receives SIGTERM/SIGINT. The server and worker install
 # their own handlers for graceful shutdown.
 #
 # The rest is the agents' shell toolbox — without them agent scripts fail
-# with "command not found" and burn turns on workarounds: jq for JSON, xz for
-# .tar.xz release archives, and python3 + make + g++ so node-gyp can build
-# native modules (e.g. sharp) during a repo's `yarn install`.
+# with "command not found" and burn turns on workarounds: jq for JSON (also
+# used by the Claude installer to read its manifest), gzip for the Amp
+# installer's compressed binary, xz for .tar.xz release archives, ripgrep
+# because the Amp binary uses `rg` on PATH and otherwise tries to download
+# one into its install dir (not writable by `node`), and python3 + make + g++
+# so node-gyp can build native modules (e.g. sharp) during a repo's
+# `yarn install`.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends git git-lfs ca-certificates curl \
-      jq xz-utils python3 make g++ && \
+      jq gzip xz-utils ripgrep python3 make g++ && \
     git lfs install --system && \
     rm -rf /var/lib/apt/lists/*
 
@@ -103,36 +108,6 @@ RUN mkdir -p -m 755 /etc/apt/keyrings && \
 COPY --chmod=755 scripts/gh-token-shim.sh /usr/local/bin/gh
 RUN test "$(command -v gh)" = /usr/local/bin/gh && gh --version
 
-# Agent CLIs the runner shells out to. Without these the deployed host reports
-# every runner as "not installed" on the agent select screen and runs fail.
-#   - claude       → @anthropic-ai/claude-code (npm, bin: claude)
-#   - amp          → @sourcegraph/amp          (npm, bin: amp)
-#   - cursor-agent → cursor.com/install script (not on npm)
-# npm globals land in /usr/local/bin (on PATH for every user, incl. `node`).
-RUN npm install -g @anthropic-ai/claude-code @sourcegraph/amp && \
-    npm cache clean --force
-
-# Cursor's installer chooses its install dir purely from $HOME: it drops a
-# versioned build under $HOME/.local/share/cursor-agent and a `cursor-agent`
-# launcher into $HOME/.local/bin. Point $HOME at a shared, world-readable dir
-# (not /root, which is mode 700 and unreadable by `node`), then symlink the
-# launcher onto PATH.
-#
-# The env assignment MUST sit on `bash`, not `curl`: in a pipeline
-# `VAR=v curl ... | bash` the prefix binds only to `curl`, so the installer
-# (bash) would inherit the build's HOME=/root and write there instead — leaving
-# the symlink below dangling and `which cursor-agent` (the runtime install
-# check) failing on the deployed host.
-ENV CURSOR_HOME=/opt/cursor
-RUN mkdir -p "$CURSOR_HOME" && \
-    curl -fsS https://cursor.com/install | HOME="$CURSOR_HOME" bash && \
-    ln -sf "$CURSOR_HOME/.local/bin/cursor-agent" /usr/local/bin/cursor-agent && \
-    chmod -R a+rX "$CURSOR_HOME" && \
-    # Fail the build loudly if the install layout ever drifts again: -x follows
-    # the whole symlink chain and confirms the agent is actually executable,
-    # mirroring the runtime `which cursor-agent` check.
-    test -x /usr/local/bin/cursor-agent
-
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
@@ -156,8 +131,25 @@ ENV CONDUIT_PROCESS_MODE=server
 # Baked-in build identifier — used as the Sentry release at runtime so error
 # events match the source maps uploaded for this commit. Empty in local/dev
 # builds (harmless; Sentry release just goes untagged).
+#
+# This ENV is also the cache boundary for the agent CLI install below. The
+# install used to sit above the app layers, so the registry build cache
+# (mode=max) replayed whatever Claude / Amp / Cursor were current the first
+# time that layer ran. A new GIT_SHA changes this layer and forces the
+# installers to resolve "latest" again. CI passes the commit; a local build
+# that omits the arg reuses one cached install until the Dockerfile changes.
 ARG GIT_SHA=""
 ENV GIT_SHA=${GIT_SHA}
+
+COPY --chmod=755 scripts/install-agent-clis.sh /tmp/install-agent-clis.sh
+RUN /tmp/install-agent-clis.sh && rm -f /tmp/install-agent-clis.sh
+
+# The install tree is root-owned and not writable by `node`. Tell the CLIs
+# not to replace that binary during a run — the next image build picks up
+# newer releases. Set after the install so the installers themselves are
+# not affected. Either variable can be overridden per deployment.
+ENV DISABLE_AUTOUPDATER=1 \
+    AMP_SKIP_UPDATE_CHECK=1
 
 EXPOSE 7456
 
