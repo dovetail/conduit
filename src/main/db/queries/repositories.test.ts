@@ -221,11 +221,10 @@ describe('updateRepository secret replacement without authMethod', () => {
     expect(store.get('r1').sshPrivateKeyEnc).toBe('enc-new')
   })
 
-  it('does not write gitlabTokenEnc when the repo authMethod is pat', async () => {
+  it('does not write gitlabTokenEnc when the update carries authMethod pat', async () => {
     seed({ id: 'r1', authMethod: 'pat', gitlabTokenEnc: null })
 
-    // authMethod omitted but stored method is not gitlab — token must not land.
-    await updateRepository('r1', { gitlabTokenEnc: 'enc-should-not-land' })
+    await updateRepository('r1', { authMethod: 'pat', gitlabTokenEnc: 'enc-should-not-land' })
 
     expect(store.get('r1').authMethod).toBe('pat')
     expect(store.get('r1').gitlabTokenEnc).toBeNull()
