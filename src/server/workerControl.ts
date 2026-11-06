@@ -873,7 +873,14 @@ export class WorkerControlPlane {
       this.scheduleExitRedrive(a)
       return
     }
-    if (Date.now() >= (a.exitRetryDeadline ?? 0)) {
+    const now = Date.now()
+    const deadline = a.exitRetryDeadline ?? 0
+    const step = a.exitRetryDelayMs ?? this.exitRetryInitialDelayMs
+    // The follow-up timer waits this long for the resent frame. Asking when
+    // less than that remains clamps the timer to a few milliseconds and rejects
+    // the delivery before the frame is read, so the worker's answer is dropped.
+    // Give up instead of requesting a frame this window can no longer accept.
+    if (!(now < deadline && deadline - now >= step)) {
       this.abandonTerminalDelivery(a)
       return
     }
