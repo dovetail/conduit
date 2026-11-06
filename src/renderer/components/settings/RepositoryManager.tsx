@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Plus, Pencil, Trash2, Info, Loader2, X, Check, RefreshCw, FolderGit2, ExternalLink, Share2, Upload, Copy, KeyRound } from 'lucide-react'
+import { Plus, Pencil, Trash2, Info, Loader2, X, Check, RefreshCw, FolderGit2, ExternalLink, Share2, Upload } from 'lucide-react'
 import { Button } from '@renderer/components/ui/button'
 import { Input } from '@renderer/components/ui/input'
 import { ShareDialog } from '@renderer/components/ShareDialog'
@@ -15,7 +15,17 @@ import {
 } from '@renderer/hooks/useRepositories'
 import { useAuth } from '@renderer/contexts/AuthContext'
 import { cn } from '@renderer/lib/utils'
-import type { Repository, RepoSyncStatus, RepoAuthMethod, RepositoryInput } from '@shared/types'
+import type { Repository, RepoSyncStatus, RepoAuthMethod } from '@shared/types'
+import {
+  emptyRepoForm,
+  repoCredentialsPresent,
+  repoFormFromRepo,
+  repoFormToInput,
+  repoFormToTestInput,
+  repoUrlProblem,
+  type RepoFormState,
+} from './repositoryForm'
+import { GitlabTokenFields, SshDeployKeyFields } from './RepositoryAuthFields'
 
 function statusColor(status: RepoSyncStatus): string {
   switch (status) {
@@ -47,97 +57,6 @@ function formatRelativeTime(ms: number): string {
   return `${Math.floor(diff / 86_400_000)}d ago`
 }
 
-interface FormState {
-  name: string
-  url: string
-  defaultBranch: string
-  authMethod: RepoAuthMethod
-  githubAppId: string
-  /** Newly-uploaded PEM this session — empty means "leave the stored key untouched". */
-  githubPrivateKey: string
-  /** Whether the repo already has a stored GitHub App key. */
-  hasGithubKey: boolean
-  /** Newly-entered GitLab token — empty means "leave the stored token untouched". */
-  gitlabToken: string
-  hasGitlabToken: boolean
-  /** Newly-uploaded/generated SSH private key — empty means "leave the stored key untouched". */
-  sshPrivateKey: string
-  hasSshKey: boolean
-  /** Public half of the stored or freshly generated key, for registering on the host. */
-  sshPublicKey: string
-  sshKeyFingerprint: string
-  sshKnownHosts: string
-  commitAuthorName: string
-  commitAuthorEmail: string
-}
-
-function emptyForm(): FormState {
-  return {
-    name: '',
-    url: '',
-    defaultBranch: 'main',
-    authMethod: 'none',
-    githubAppId: '',
-    githubPrivateKey: '',
-    hasGithubKey: false,
-    gitlabToken: '',
-    hasGitlabToken: false,
-    sshPrivateKey: '',
-    hasSshKey: false,
-    sshPublicKey: '',
-    sshKeyFingerprint: '',
-    sshKnownHosts: '',
-    commitAuthorName: '',
-    commitAuthorEmail: '',
-  }
-}
-
-function formFromRepo(repo: Repository): FormState {
-  return {
-    name: repo.name,
-    url: repo.url,
-    defaultBranch: repo.defaultBranch,
-    authMethod: repo.authMethod,
-    githubAppId: repo.githubAppId ?? '',
-    githubPrivateKey: '',
-    hasGithubKey: !!repo.hasGithubKey,
-    gitlabToken: '',
-    hasGitlabToken: !!repo.hasGitlabToken,
-    sshPrivateKey: '',
-    hasSshKey: !!repo.hasSshKey,
-    sshPublicKey: repo.sshPublicKey ?? '',
-    sshKeyFingerprint: repo.sshKeyFingerprint ?? '',
-    sshKnownHosts: repo.sshKnownHosts ?? '',
-    commitAuthorName: repo.commitAuthorName ?? '',
-    commitAuthorEmail: repo.commitAuthorEmail ?? '',
-  }
-}
-
-/** Build the create/update payload, including credential fields only for the selected method. */
-function formToInput(form: FormState): RepositoryInput {
-  const base: RepositoryInput = {
-    name: form.name.trim(),
-    url: form.url.trim(),
-    defaultBranch: form.defaultBranch.trim(),
-    authMethod: form.authMethod,
-    commitAuthorName: form.commitAuthorName.trim() || undefined,
-    commitAuthorEmail: form.commitAuthorEmail.trim() || undefined,
-  }
-  if (form.authMethod === 'githubapp') {
-    base.githubAppId = form.githubAppId.trim()
-    // Only send a key when a new one was uploaded; otherwise leave the stored one.
-    if (form.githubPrivateKey) base.githubPrivateKey = form.githubPrivateKey
-  }
-  if (form.authMethod === 'gitlab' && form.gitlabToken.trim()) {
-    base.gitlabToken = form.gitlabToken.trim()
-  }
-  if (form.authMethod === 'sshkey') {
-    if (form.sshPrivateKey) base.sshPrivateKey = form.sshPrivateKey
-    base.sshKnownHosts = form.sshKnownHosts.trim()
-  }
-  return base
-}
-
 const AUTH_METHODS: { value: RepoAuthMethod; label: string }[] = [
   { value: 'none', label: 'None' },
   { value: 'pat', label: 'GitHub PAT' },
@@ -153,27 +72,9 @@ const URL_PLACEHOLDERS: Partial<Record<RepoAuthMethod, string>> = {
   ssh: 'git@github.com:org/repo.git',
 }
 
-function isSshUrl(url: string): boolean {
-  const s = url.trim()
-  return /^ssh:\/\//i.test(s) || (!s.includes('://') && /^[^@\s/]+@[^:\s/]+:.+/.test(s))
-}
-
-/** Inline hint when the URL can't work with the chosen method (the server enforces it too). */
-function urlMismatch(form: FormState): string | undefined {
-  const url = form.url.trim()
-  if (!url) return undefined
-  if (['pat', 'githubapp', 'gitlab'].includes(form.authMethod) && !url.startsWith('https://')) {
-    return 'This method needs an https:// clone URL.'
-  }
-  if (form.authMethod === 'sshkey' && !isSshUrl(url)) {
-    return 'Deploy keys need an SSH clone URL, e.g. git@gitlab.com:group/project.git'
-  }
-  return undefined
-}
-
 interface InlineFormProps {
-  initial: FormState
-  onSave: (form: FormState) => void
+  initial: RepoFormState
+  onSave: (form: RepoFormState) => void
   onCancel: () => void
   saving: boolean
   /** Existing repo id — lets Test Connection reuse a stored key when no new PEM is uploaded. */
@@ -183,53 +84,13 @@ interface InlineFormProps {
 }
 
 function InlineForm({ initial, onSave, onCancel, saving, repoId, saveError }: InlineFormProps) {
-  const [form, setForm] = useState<FormState>(initial)
+  const [form, setForm] = useState<RepoFormState>(initial)
+  const update = (patch: Partial<RepoFormState>) => setForm((f) => ({ ...f, ...patch }))
   const testMutation = useTestRepoConnection()
   const [pat, setPat] = useState('')
   const [patStatus, setPatStatus] = useState<'loading' | 'configured' | 'missing'>('loading')
   const [patSaving, setPatSaving] = useState(false)
   const [keyFileName, setKeyFileName] = useState('')
-  const [sshKeyFileName, setSshKeyFileName] = useState('')
-  const [generating, setGenerating] = useState(false)
-  const [generateError, setGenerateError] = useState<string | null>(null)
-  const [copied, setCopied] = useState(false)
-
-  const handleSshKeyFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    const reader = new FileReader()
-    reader.onload = () => {
-      setForm((f) => ({ ...f, sshPrivateKey: String(reader.result ?? ''), sshPublicKey: '', sshKeyFingerprint: '' }))
-      setSshKeyFileName(file.name)
-    }
-    reader.readAsText(file)
-  }
-
-  const handleGenerateKey = async () => {
-    setGenerating(true)
-    setGenerateError(null)
-    try {
-      const pair = await api.repos.generateSshKey()
-      setForm((f) => ({
-        ...f,
-        sshPrivateKey: pair.privateKey,
-        sshPublicKey: pair.publicKey,
-        sshKeyFingerprint: pair.fingerprint,
-      }))
-      setSshKeyFileName('')
-    } catch (err) {
-      setGenerateError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setGenerating(false)
-    }
-  }
-
-  const handleCopyPublicKey = () => {
-    navigator.clipboard.writeText(form.sshPublicKey).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    }).catch(console.error)
-  }
 
   const handleKeyFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -263,13 +124,8 @@ function InlineForm({ initial, onSave, onCancel, saving, repoId, saveError }: In
     }
   }
 
-  const githubAppValid =
-    form.authMethod !== 'githubapp' ||
-    (form.githubAppId.trim().length > 0 && (form.hasGithubKey || form.githubPrivateKey.length > 0))
-  const gitlabValid = form.authMethod !== 'gitlab' || form.hasGitlabToken || form.gitlabToken.trim().length > 0
-  const sshKeyValid = form.authMethod !== 'sshkey' || form.hasSshKey || form.sshPrivateKey.length > 0
-  const mismatch = urlMismatch(form)
-  const credentialsValid = githubAppValid && gitlabValid && sshKeyValid && !mismatch
+  const urlProblem = repoUrlProblem(form, repoId ? initial.url : undefined)
+  const credentialsValid = repoCredentialsPresent(form) && !urlProblem
   const isValid =
     form.name.trim().length > 0 &&
     form.url.trim().length > 0 &&
@@ -279,16 +135,7 @@ function InlineForm({ initial, onSave, onCancel, saving, repoId, saveError }: In
 
   const handleTest = () => {
     testMutation.reset()
-    testMutation.mutate({
-      url: form.url.trim(),
-      authMethod: form.authMethod,
-      githubAppId: form.githubAppId.trim() || undefined,
-      githubPrivateKey: form.githubPrivateKey || undefined,
-      gitlabToken: form.authMethod === 'gitlab' ? form.gitlabToken.trim() || undefined : undefined,
-      sshPrivateKey: form.authMethod === 'sshkey' ? form.sshPrivateKey || undefined : undefined,
-      sshKnownHosts: form.authMethod === 'sshkey' ? form.sshKnownHosts.trim() : undefined,
-      repoId,
-    })
+    testMutation.mutate(repoFormToTestInput(form, repoId))
   }
 
   return (
@@ -317,7 +164,7 @@ function InlineForm({ initial, onSave, onCancel, saving, repoId, saveError }: In
           placeholder={URL_PLACEHOLDERS[form.authMethod] ?? 'https://github.com/org/repo.git'}
           className="font-mono text-xs"
         />
-        {mismatch && <p className="text-[10px] text-amber-400">{mismatch}</p>}
+        {urlProblem && <p className="text-[10px] text-amber-400">{urlProblem}</p>}
       </div>
 
       {/* Default Branch */}
@@ -498,144 +345,9 @@ function InlineForm({ initial, onSave, onCancel, saving, repoId, saveError }: In
             </button>
           </div>
         ) : form.authMethod === 'gitlab' ? (
-          <div className="space-y-2">
-            <div className="space-y-1">
-              <label className="block text-xs text-[var(--text-secondary)]">
-                GitLab Access Token
-              </label>
-              {form.hasGitlabToken && !form.gitlabToken ? (
-                <div className="flex items-center gap-2 text-xs">
-                  <div className="w-2 h-2 rounded-full bg-green-500" />
-                  <span className="text-[var(--text-secondary)]">Token configured</span>
-                  <button
-                    type="button"
-                    onClick={() => setForm((f) => ({ ...f, hasGitlabToken: false }))}
-                    className="text-[var(--accent)] hover:underline ml-1"
-                  >
-                    Replace
-                  </button>
-                </div>
-              ) : (
-                <Input
-                  type="password"
-                  value={form.gitlabToken}
-                  onChange={(e) => setForm((f) => ({ ...f, gitlabToken: e.target.value }))}
-                  placeholder="glpat-..."
-                  className="font-mono text-xs"
-                  autoComplete="off"
-                />
-              )}
-            </div>
-            <p className="text-[10px] text-[var(--text-secondary)] opacity-70">
-              A project, group, or personal access token with the <code className="font-mono">Developer</code> role
-              (or higher) and <code className="font-mono">read_repository</code> + <code className="font-mono">write_repository</code>{' '}
-              scopes — add <code className="font-mono">api</code> if agents should open merge requests with{' '}
-              <code className="font-mono">glab</code>. Works with self-managed GitLab. The token is encrypted at rest and never
-              shown again.
-            </p>
-            <button
-              type="button"
-              onClick={() => api.shell.openExternal('https://docs.gitlab.com/user/project/settings/project_access_tokens/').catch(console.error)}
-              className="flex items-center gap-1.5 text-[10px] text-[var(--accent)] hover:underline"
-            >
-              <ExternalLink className="h-3 w-3" />
-              How to create a project access token
-            </button>
-          </div>
+          <GitlabTokenFields form={form} update={update} />
         ) : form.authMethod === 'sshkey' ? (
-          <div className="space-y-2">
-            <div className="space-y-1">
-              <label className="block text-xs text-[var(--text-secondary)]">
-                Private Key
-              </label>
-              <div className="flex items-center gap-2 flex-wrap">
-                {form.hasSshKey && !form.sshPrivateKey && (
-                  <span className="flex items-center gap-2 text-xs text-[var(--text-secondary)] mr-1">
-                    <span className="w-2 h-2 rounded-full bg-green-500" />
-                    Deploy key configured
-                  </span>
-                )}
-                <label className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] cursor-pointer hover:text-[var(--text-primary)] text-[var(--text-secondary)]">
-                  <Upload className="h-3 w-3" />
-                  {form.sshPrivateKey && sshKeyFileName ? 'Key loaded' : form.hasSshKey ? 'Replace with file' : 'Upload key'}
-                  <input type="file" className="hidden" onChange={handleSshKeyFile} />
-                </label>
-                <button
-                  type="button"
-                  onClick={handleGenerateKey}
-                  disabled={generating}
-                  className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] hover:text-[var(--text-primary)] text-[var(--text-secondary)] disabled:opacity-50"
-                >
-                  {generating ? <Loader2 className="h-3 w-3 animate-spin" /> : <KeyRound className="h-3 w-3" />}
-                  {form.hasSshKey || form.sshPrivateKey ? 'Generate new key' : 'Generate key'}
-                </button>
-                {sshKeyFileName && (
-                  <span className="text-[10px] text-[var(--text-secondary)] truncate font-mono">{sshKeyFileName}</span>
-                )}
-                {form.sshPrivateKey && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setForm((f) => ({
-                        ...f,
-                        sshPrivateKey: '',
-                        sshPublicKey: initial.sshPublicKey,
-                        sshKeyFingerprint: initial.sshKeyFingerprint,
-                      }))
-                      setSshKeyFileName('')
-                    }}
-                    className="text-[var(--text-secondary)] hover:text-red-400"
-                    title="Discard new key"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                )}
-              </div>
-              {generateError && <p className="text-[10px] text-red-400">{generateError}</p>}
-            </div>
-            {form.sshPublicKey && (
-              <div className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <label className="block text-xs text-[var(--text-secondary)]">
-                    Public Key — add this as a deploy key on the repository
-                  </label>
-                  <button
-                    type="button"
-                    onClick={handleCopyPublicKey}
-                    className="flex items-center gap-1 text-[10px] text-[var(--accent)] hover:underline"
-                  >
-                    {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-                    {copied ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-                <pre className="text-[10px] font-mono whitespace-pre-wrap break-all px-2 py-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] text-[var(--text-primary)] select-all">
-                  {form.sshPublicKey}
-                </pre>
-                {form.sshKeyFingerprint && (
-                  <p className="text-[10px] font-mono text-[var(--text-secondary)] opacity-70">{form.sshKeyFingerprint}</p>
-                )}
-              </div>
-            )}
-            <div className="space-y-1">
-              <label className="block text-xs text-[var(--text-secondary)]">
-                Known Hosts <span className="opacity-60">(optional)</span>
-              </label>
-              <textarea
-                value={form.sshKnownHosts}
-                onChange={(e) => setForm((f) => ({ ...f, sshKnownHosts: e.target.value }))}
-                placeholder="gitlab.com ssh-ed25519 AAAA…  (leave blank to trust the host key seen on first sync)"
-                rows={2}
-                spellCheck={false}
-                className="w-full text-[10px] font-mono px-2 py-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] text-[var(--text-primary)] placeholder:text-[var(--text-secondary)] placeholder:opacity-60"
-              />
-            </div>
-            <p className="text-[10px] text-[var(--text-secondary)] opacity-70">
-              Works with any git host over SSH (GitLab, GitHub, Bitbucket, self-hosted). On GitLab add the public key under
-              Settings → Repository → Deploy keys and tick <em>Grant write permissions</em> so agents can push. The private
-              key must not have a passphrase; it is encrypted at rest and never shown again. The host key is pinned on the
-              first successful sync and checked strictly afterwards.
-            </p>
-          </div>
+          <SshDeployKeyFields form={form} update={update} saved={initial} />
         ) : (
           <p className="text-[10px] text-[var(--text-secondary)] opacity-70">
             {form.authMethod === 'ssh'
@@ -711,9 +423,9 @@ function RepoRow({ repo, isOwner, onShare }: RepoRowProps) {
   const deleteRepo = useDeleteRepository()
   const triggerSync = useTriggerRepoSync()
 
-  const handleSave = (form: FormState) => {
+  const handleSave = (form: RepoFormState) => {
     updateRepo.mutate(
-      { id: repo.id, data: formToInput(form) },
+      { id: repo.id, data: repoFormToInput(form) },
       { onSuccess: () => setEditing(false) }
     )
   }
@@ -729,7 +441,7 @@ function RepoRow({ repo, isOwner, onShare }: RepoRowProps) {
   if (editing) {
     return (
       <InlineForm
-        initial={formFromRepo(repo)}
+        initial={repoFormFromRepo(repo)}
         onSave={handleSave}
         onCancel={() => setEditing(false)}
         saving={updateRepo.isPending}
@@ -851,8 +563,8 @@ export function RepositoryManager() {
   const [showAddForm, setShowAddForm] = useState(false)
   const [shareRepoId, setShareRepoId] = useState<string | null>(null)
 
-  const handleCreate = (form: FormState) => {
-    createRepo.mutate(formToInput(form), { onSuccess: () => setShowAddForm(false) })
+  const handleCreate = (form: RepoFormState) => {
+    createRepo.mutate(repoFormToInput(form), { onSuccess: () => setShowAddForm(false) })
   }
 
   const myRepos = repos.filter((r) => r.ownerId === user?.id)
@@ -893,7 +605,7 @@ export function RepositoryManager() {
         {/* Add form */}
         {showAddForm && (
           <InlineForm
-            initial={emptyForm()}
+            initial={emptyRepoForm()}
             onSave={handleCreate}
             onCancel={() => setShowAddForm(false)}
             saving={createRepo.isPending}

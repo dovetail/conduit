@@ -533,11 +533,15 @@ export interface RepoTestConnectionInput {
   repoId?: string
 }
 
-/** A freshly generated deploy key, handed to the form like an uploaded one. */
-export interface SshKeyPairResult {
-  privateKey: string
+/** The public half of a deploy key — what the user registers on the git host. */
+export interface SshPublicKeyInfo {
   publicKey: string
   fingerprint: string
+}
+
+/** A freshly generated deploy key, handed to the form like an uploaded one. */
+export interface SshKeyPairResult extends SshPublicKeyInfo {
+  privateKey: string
 }
 
 export interface RepoSyncStatusPayload {
@@ -747,6 +751,8 @@ export interface ConduitAPI {
     triggerSync: (id: string) => Promise<void>
     testConnection: (data: RepoTestConnectionInput) => Promise<{ success: boolean; message: string }>
     generateSshKey: () => Promise<SshKeyPairResult>
+    /** Validate an uploaded private key and derive its public half. Nothing is stored. */
+    describeSshKey: (privateKey: string) => Promise<SshPublicKeyInfo>
   }
   onRepoSyncStatus: (cb: (payload: RepoSyncStatusPayload) => void) => () => void
   publishTargets: {
