@@ -11,7 +11,7 @@ import { canAccessEntity } from '../../../main/db/queries/access'
 import { isAuthEnabled } from '../../auth/config'
 import { ClientError } from '../../errors'
 import { checkRunnerClis } from '../../runnerCli'
-import { assertAuthMatchesUrl, runConnectionTest, withEncryptedSecrets } from '../../repoCredentials'
+import { assertRepositoryUrl, runConnectionTest, withEncryptedSecrets } from '../../repoCredentials'
 import { generateSshKeyPair } from '../../sshKey'
 import { redactGlobalMcp, redactPublishTarget, redactUrl } from '../redact'
 import { errorMessage, registerTool, type ToolEnv } from '../registry'
@@ -22,18 +22,7 @@ const PEM_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]+-----END [A-Z ]*PRIVATE
 
 /** Reject combinations the repo-sync and run paths cannot use, before anything is stored. */
 function assertRepositoryInput(input: RepositoryInput): void {
-  let parsed: URL | undefined
-  try {
-    parsed = new URL(input.url)
-  } catch {
-    if (!/^[\w.-]+@[\w.-]+:.+/.test(input.url)) {
-      throw new ClientError(`"${input.url}" is not a valid clone URL.`)
-    }
-  }
-  if (parsed && (parsed.username || parsed.password)) {
-    throw new ClientError('Do not embed credentials in the URL; set authMethod and its credentials instead.')
-  }
-  assertAuthMatchesUrl(input)
+  assertRepositoryUrl(input)
   if (input.authMethod === 'githubapp') {
     if (!input.githubAppId || !/^\d+$/.test(input.githubAppId)) {
       throw new ClientError('GitHub App auth needs a numeric githubAppId.')

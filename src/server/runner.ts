@@ -572,6 +572,14 @@ export async function startRunServer(
         (repo.syncError ? ` Error: ${repo.syncError}` : ' Please wait for sync to complete.')
       )
     }
+    if (repo.authMethod === 'sshkey' && !repo.sshKnownHosts?.trim()) {
+      // The host key is pinned by the first successful server-side sync. A
+      // remote worker cloning before then would trust whatever host answers,
+      // and couldn't record what it saw.
+      throw new Error(
+        `Repository "${repo.name}" has no pinned SSH host key yet. Sync it successfully (or set Known Hosts) before running agents.`
+      )
+    }
     // Resolve push credentials (non-throwing) so the token can travel in the
     // RunSpec for the worker to inject into the checkout's origin. A failed
     // mint is recorded, not fatal — the agent's later `git push` fails with an
@@ -583,7 +591,7 @@ export async function startRunServer(
     if (pushTokenError) {
       pushCredentialError = pushTokenError.message
       reporter.captureException(pushTokenError, {
-        tags: { component: 'runner', op: 'resolvePushCredential', repoId: repo.id },
+        tags: { component: 'runner', op: 'resolveRepoAuth', repoId: repo.id },
       })
       console.error(`[server/runner] Could not resolve push credentials for repo ${repo.id}:`, pushTokenError)
     }

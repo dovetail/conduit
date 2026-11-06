@@ -45,21 +45,26 @@ export function missingCredentialMessage(
   repo: Pick<Repository, 'url' | 'authMethod'>,
   auth: ResolvedRepoAuth
 ): string | undefined {
+  if (auth.token || auth.sshKey) return undefined
+  // A GitHub method on a non-HTTPS URL has nothing to inject; git uses the host's own SSH setup.
+  const https = repo.url.startsWith('https://')
   switch (repo.authMethod) {
     case 'pat':
-      return auth.token || !repo.url.startsWith('https://')
-        ? undefined
-        : 'No GitHub credential resolved for this HTTPS repo (auth method: PAT). ' +
-            'Configure a global GitHub PAT, or switch the repo to GitHub App authentication.'
+      if (!https) return undefined
+      return (
+        'No GitHub credential resolved for this HTTPS repo (auth method: PAT). ' +
+        'Configure a global GitHub PAT, or switch the repo to GitHub App authentication.'
+      )
     case 'githubapp':
-      return auth.token || !repo.url.startsWith('https://')
-        ? undefined
-        : 'No GitHub App token could be minted for this HTTPS repo. ' +
-            'Check the App is installed on the repository and its App ID + private key are configured.'
+      if (!https) return undefined
+      return (
+        'No GitHub App token could be minted for this HTTPS repo. ' +
+        'Check the App is installed on the repository and its App ID + private key are configured.'
+      )
     case 'gitlab':
-      return auth.token ? undefined : 'No GitLab access token is configured for this repository.'
+      return 'No GitLab access token is configured for this repository.'
     case 'sshkey':
-      return auth.sshKey ? undefined : 'No SSH deploy key is configured for this repository.'
+      return 'No SSH deploy key is configured for this repository.'
     default:
       return undefined
   }

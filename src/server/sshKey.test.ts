@@ -7,7 +7,6 @@ import * as path from 'path'
 import {
   deriveSshPublicKey,
   generateSshKeyPair,
-  isSshUrl,
   materializeSshKey,
   sshKeyFingerprint,
   withSshKey,
@@ -105,32 +104,22 @@ describe('sshKeyFingerprint', () => {
   })
 })
 
-describe('isSshUrl', () => {
-  it.each([
-    ['git@gitlab.com:group/project.git', true],
-    ['ssh://git@gitlab.example.com:2222/group/project.git', true],
-    ['deploy@10.0.0.4:repos/app.git', true],
-    ['https://gitlab.com/group/project.git', false],
-    ['http://host/repo.git', false],
-    ['/srv/git/repo.git', false],
-  ])('%s → %s', (url, expected) => {
-    expect(isSshUrl(url)).toBe(expected)
-  })
-})
-
 describe('materializeSshKey', () => {
   it('writes a 0600 key and strict host checking when known_hosts are pinned', () => {
     const pair = generateSshKeyPair()
     const m = materializeSshKey({ privateKey: pair.privateKey, knownHosts: 'gitlab.com ssh-ed25519 AAAA' })
     try {
       const cmd = m.env.GIT_SSH_COMMAND
-      const keyPath = /-i '([^']+)'/.exec(cmd)![1]
-      expect(fs.statSync(keyPath).mode & 0o777).toBe(0o600)
-      expect(fs.readFileSync(keyPath, 'utf8').endsWith('-----\n')).toBe(true)
+      expect(fs.statSync(m.keyPath).mode & 0o777).toBe(0o600)
+      expect(fs.readFileSync(m.keyPath, 'utf8').endsWith('-----\n')).toBe(true)
+      expect(cmd).toContain(m.keyPath)
       expect(cmd).toContain('StrictHostKeyChecking=yes')
       expect(cmd).toContain('IdentitiesOnly=yes')
       expect(cmd).toContain('IdentityAgent=none')
       expect(cmd).toContain('BatchMode=yes')
+      // ssh_config can't reroute the connection or add identities.
+      expect(cmd).toMatch(/^ssh -F \/dev\/null /)
+      expect(cmd).toContain('HashKnownHosts=no')
       expect(m.readKnownHosts()).toBe('gitlab.com ssh-ed25519 AAAA')
     } finally {
       m.dispose()
@@ -139,10 +128,9 @@ describe('materializeSshKey', () => {
 
   it('accepts a new host key when nothing is pinned, and dispose removes the key', () => {
     const m = materializeSshKey({ privateKey: generateSshKeyPair().privateKey })
-    const keyPath = /-i '([^']+)'/.exec(m.env.GIT_SSH_COMMAND)![1]
     expect(m.env.GIT_SSH_COMMAND).toContain('StrictHostKeyChecking=accept-new')
     m.dispose()
-    expect(fs.existsSync(keyPath)).toBe(false)
+    expect(fs.existsSync(m.keyPath)).toBe(false)
   })
 })
 

@@ -11,7 +11,14 @@ vi.mock('./crypto', () => ({
 }))
 
 import { getRepository, getRepositoryCredentials } from '../main/db/queries/repositories'
-import { assertAuthMatchesUrl, gitAuthHint, resolveTestAuth, withEncryptedSecrets } from './repoCredentials'
+import {
+  assertAuthMatchesUrl,
+  assertRepositoryUrl,
+  changesRepositoryCredentials,
+  gitAuthHint,
+  resolveTestAuth,
+  withEncryptedSecrets,
+} from './repoCredentials'
 import { generateSshKeyPair } from './sshKey'
 
 const STORED: Repository = {
@@ -62,6 +69,57 @@ describe('assertAuthMatchesUrl', () => {
     expect(() => assertAuthMatchesUrl({ url: 'https://gitlab.com/g/p.git', authMethod: 'gitlab' })).not.toThrow()
     expect(() => assertAuthMatchesUrl({ url: 'ssh://git@h:2222/p.git', authMethod: 'sshkey' })).not.toThrow()
     expect(() => assertAuthMatchesUrl({ url: 'git@h:p.git', authMethod: 'none' })).not.toThrow()
+  })
+})
+
+describe('assertRepositoryUrl', () => {
+  it('refuses credentials embedded in an HTTPS URL', () => {
+    expect(() =>
+      assertRepositoryUrl({ url: 'https://oauth2:glpat-1@gitlab.com/g/p.git', authMethod: 'gitlab' })
+    ).toThrow(/Do not embed credentials/)
+  })
+
+  it('accepts an ssh:// URL with a user and port', () => {
+    expect(() =>
+      assertRepositoryUrl({ url: 'ssh://git@gitlab.example.com:2222/g/p.git', authMethod: 'sshkey' })
+    ).not.toThrow()
+  })
+
+  it('still applies the auth/URL match', () => {
+    expect(() => assertRepositoryUrl({ url: 'https://gitlab.com/g/p.git', authMethod: 'sshkey' })).toThrow(
+      /SSH clone URL/
+    )
+  })
+})
+
+describe('changesRepositoryCredentials', () => {
+  const existing = {
+    url: 'git@gitlab.com:g/p.git',
+    authMethod: 'sshkey' as const,
+    githubAppId: undefined,
+    sshKnownHosts: 'gitlab.com ssh-ed25519 AAAA',
+  }
+
+  it.each([
+    ['a name change', { name: 'renamed' }],
+    ['the same values sent back by the form', { url: existing.url, authMethod: 'sshkey' as const, sshKnownHosts: ` ${existing.sshKnownHosts} ` }],
+    ['a path change on the same host', { url: 'git@gitlab.com:g/other.git' }],
+    ['a blank secret', { sshPrivateKey: '  ', gitlabToken: '' }],
+  ])('is false for %s', (_label, input) => {
+    expect(changesRepositoryCredentials(input, existing)).toBe(false)
+  })
+
+  it.each([
+    ['a different host', { url: 'git@evil.example:g/p.git' }],
+    ['a different auth method', { authMethod: 'none' as const }],
+    ['a new private key', { sshPrivateKey: generateSshKeyPair().privateKey }],
+    ['a new token', { gitlabToken: 'glpat-2' }],
+    ['a GitHub App key', { githubPrivateKey: '-----BEGIN PRIVATE KEY-----' }],
+    ['a new App ID', { githubAppId: '42' }],
+    ['a replaced host key pin', { sshKnownHosts: 'gitlab.com ssh-ed25519 BBBB' }],
+    ['a cleared host key pin', { sshKnownHosts: '' }],
+  ])('is true for %s', (_label, input) => {
+    expect(changesRepositoryCredentials(input, existing)).toBe(true)
   })
 })
 

@@ -2,6 +2,9 @@ import * as crypto from 'crypto'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
+import { sshKeyFingerprint } from '../main/utils/sshFingerprint'
+
+export { sshKeyFingerprint }
 
 /**
  * SSH deploy-key support for repositories that authenticate with an uploaded
@@ -165,14 +168,6 @@ function passphraseError(): Error {
   )
 }
 
-/** `SHA256:…` fingerprint of a public key line, matching `ssh-keygen -lf`. */
-export function sshKeyFingerprint(publicKey: string): string {
-  const b64 = publicKey.trim().split(/\s+/)[1]
-  if (!b64) throw new Error('Invalid SSH public key.')
-  const digest = crypto.createHash('sha256').update(Buffer.from(b64, 'base64')).digest('base64')
-  return `SHA256:${digest.replace(/=+$/, '')}`
-}
-
 /** Generate a new ed25519 deploy key pair in OpenSSH format. */
 export function generateSshKeyPair(comment = 'conduit-deploy-key'): SshKeyPair {
   const { privateKey } = crypto.generateKeyPairSync('ed25519')
@@ -221,6 +216,8 @@ export interface SshKeyConfig {
 export interface MaterializedSshKey {
   /** `GIT_SSH_COMMAND` pointing ssh at the key and the pinned known_hosts. */
   env: Record<string, string>
+  /** The 0600 private key file, removed by {@link MaterializedSshKey.dispose}. */
+  keyPath: string
   /** known_hosts content after use — includes host keys learned on first use. */
   readKnownHosts(): string
   dispose(): void
@@ -238,7 +235,10 @@ function shellQuote(value: string): string {
  * what was learned via {@link MaterializedSshKey.readKnownHosts}.
  *
  * The agent/server SSH agent is disabled (`IdentityAgent=none`) so the
- * repo's own key is the only identity offered.
+ * repo's own key is the only identity offered, and ssh_config files are
+ * ignored (`-F /dev/null`) so a host block can't reroute the connection
+ * (ProxyCommand, HostName) or substitute other identities. Learned host keys
+ * are stored unhashed so operators can read the pin.
  */
 export function materializeSshKey(config: SshKeyConfig, dirPrefix = 'conduit-sshkey-'): MaterializedSshKey {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), dirPrefix))
@@ -250,15 +250,18 @@ export function materializeSshKey(config: SshKeyConfig, dirPrefix = 'conduit-ssh
   fs.writeFileSync(knownHostsPath, pinned ? `${pinned}\n` : '', { mode: 0o600 })
   const command = [
     'ssh',
+    '-F', '/dev/null',
     '-i', shellQuote(keyPath),
     '-o', 'IdentitiesOnly=yes',
     '-o', 'IdentityAgent=none',
     '-o', 'BatchMode=yes',
     '-o', `UserKnownHostsFile=${shellQuote(knownHostsPath)}`,
+    '-o', 'HashKnownHosts=no',
     '-o', `StrictHostKeyChecking=${pinned ? 'yes' : 'accept-new'}`,
   ].join(' ')
   return {
     env: { GIT_SSH_COMMAND: command },
+    keyPath,
     readKnownHosts: () => {
       try {
         return fs.readFileSync(knownHostsPath, 'utf8').trim()
@@ -288,11 +291,4 @@ export async function withSshKey<T>(
   } finally {
     key.dispose()
   }
-}
-
-/** True for scp-style (`git@host:path`) or `ssh://` clone URLs. */
-export function isSshUrl(url: string): boolean {
-  const s = url.trim()
-  if (/^ssh:\/\//i.test(s)) return true
-  return !s.includes('://') && /^[^@\s/]+@[^:\s/]+:.+/.test(s)
 }

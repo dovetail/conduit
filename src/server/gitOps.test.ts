@@ -77,6 +77,13 @@ describe('buildAuthUrl', () => {
     )
   })
 
+  it('percent-encodes a token with URL-reserved characters so it stays in the userinfo', () => {
+    const url = buildAuthUrl('https://gitlab.com/g/p.git', 'tok@en:#/x', 'oauth2')
+    expect(url).toBe('https://oauth2:tok%40en%3A%23%2Fx@gitlab.com/g/p.git')
+    expect(new URL(url).hostname).toBe('gitlab.com')
+    expect(redactCredentials(url)).toBe('https://***@gitlab.com/g/p.git')
+  })
+
   it('leaves SSH URLs untouched', () => {
     expect(buildAuthUrl('git@gitlab.com:g/p.git', 'glpat-1', 'oauth2')).toBe('git@gitlab.com:g/p.git')
   })

@@ -6,7 +6,7 @@ import { repositories, agents } from '../schema'
 import { REPOS_DIR } from '../../utils/paths'
 import { getVisibleEntityIds } from './access'
 import { deleteSharesForEntity } from './shares'
-import { sshKeyFingerprint } from '../../../server/sshKey'
+import { sshKeyFingerprint } from '../../utils/sshFingerprint'
 import type { Repository } from '../../../shared/types'
 
 /**

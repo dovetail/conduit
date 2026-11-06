@@ -3,10 +3,11 @@ import { mintInstallationToken, resolveRepoToken } from './githubApp'
 import { getGithubPat } from './store'
 import { GITLAB_TOKEN_USERNAME, testRepoConnection } from './gitOps'
 import { gitRemoteHost, toGitAuth, type ResolvedRepoAuth } from './repoAuth'
-import { deriveSshPublicKey, isSshUrl, withSshKey } from './sshKey'
+import { deriveSshPublicKey, withSshKey } from './sshKey'
 import { ClientError } from './errors'
 import { getRepository, getRepositoryCredentials } from '../main/db/queries/repositories'
-import type { RepositoryInput, RepoTestConnectionInput } from '../shared/types'
+import { authUrlMismatch, cloneUrlProblem } from '../shared/repoUrl'
+import type { Repository, RepositoryInput, RepoTestConnectionInput } from '../shared/types'
 
 type SecretFields = 'githubPrivateKey' | 'gitlabToken' | 'sshPrivateKey'
 
@@ -49,20 +50,40 @@ export function withEncryptedSecrets<T extends Partial<RepositoryInput>>(data: T
   return result
 }
 
-/**
- * Reject auth/URL combinations the sync and run paths can't use: token methods
- * inject into an HTTPS URL, a deploy key only applies to an SSH URL.
- */
+/** Reject auth/URL combinations the sync and run paths can't use. */
 export function assertAuthMatchesUrl(input: Pick<RepositoryInput, 'url' | 'authMethod'>): void {
-  const url = input.url.trim()
-  if (['pat', 'githubapp', 'gitlab'].includes(input.authMethod) && !url.startsWith('https://')) {
-    throw new ClientError(`Auth method "${input.authMethod}" needs an https:// clone URL.`)
-  }
-  if (input.authMethod === 'sshkey' && !isSshUrl(url)) {
-    throw new ClientError(
-      'SSH deploy keys need an SSH clone URL, e.g. git@gitlab.com:group/project.git or ssh://git@host/path.git.'
-    )
-  }
+  const problem = authUrlMismatch(input.url, input.authMethod)
+  if (problem) throw new ClientError(problem)
+}
+
+/** {@link assertAuthMatchesUrl}, plus refuse malformed URLs and URLs carrying credentials. */
+export function assertRepositoryUrl(input: Pick<RepositoryInput, 'url' | 'authMethod'>): void {
+  const problem = cloneUrlProblem(input.url)
+  if (problem) throw new ClientError(problem)
+  assertAuthMatchesUrl(input)
+}
+
+/**
+ * Whether an update touches what the stored credential is or where it is
+ * sent. Only the owner may do that: a shared editor who could swap the host
+ * could replay the stored token (or deploy key, after a fresh host-key pin) at
+ * a server they control, and switching the auth method discards the stored
+ * secrets.
+ */
+export function changesRepositoryCredentials(
+  input: Partial<RepositoryInput>,
+  existing: Pick<Repository, 'url' | 'authMethod' | 'githubAppId' | 'sshKnownHosts'>
+): boolean {
+  const blank = (s: string | undefined) => s?.trim() || undefined
+  return (
+    (input.authMethod !== undefined && input.authMethod !== existing.authMethod) ||
+    (input.url !== undefined && gitRemoteHost(input.url) !== gitRemoteHost(existing.url)) ||
+    (input.githubAppId !== undefined && input.githubAppId !== existing.githubAppId) ||
+    !!blank(input.githubPrivateKey) ||
+    !!blank(input.gitlabToken) ||
+    !!blank(input.sshPrivateKey) ||
+    (input.sshKnownHosts !== undefined && blank(input.sshKnownHosts) !== blank(existing.sshKnownHosts))
+  )
 }
 
 /**

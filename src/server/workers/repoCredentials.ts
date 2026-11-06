@@ -6,6 +6,11 @@ import { buildAuthUrl, runGit } from '../gitOps'
 /**
  * Keeps a run's GitHub credential current for its whole lifetime.
  *
+ * The `origin` rewrite is host-neutral (it honors the repo's `tokenUsername`,
+ * so a GitLab token's `oauth2` user survives a re-point), but only GitHub App
+ * tokens are ever refreshed; static GitLab tokens are set once, and `glab`
+ * reads `GITLAB_TOKEN` from the env (see `repoCliEnvEntries`).
+ *
  * A GitHub App installation token lives about an hour, but agent runs can go
  * much longer, and the token is baked into two places the agent reads: the
  * checkout's `origin` URL (`git push`) and the `GH_TOKEN` env var (`gh`). The

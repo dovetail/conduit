@@ -117,7 +117,7 @@ function normalizeAuth(auth: string | GitAuth | undefined): GitAuth {
 export function buildAuthUrl(url: string, pat?: string, username: string = GITHUB_TOKEN_USERNAME): string {
   if (!pat || !url.startsWith('https://')) return url
   // https://github.com/... → https://x-access-token:<pat>@github.com/...
-  return url.replace('https://', `https://${encodeURIComponent(username)}:${pat}@`)
+  return url.replace('https://', `https://${encodeURIComponent(username)}:${encodeURIComponent(pat)}@`)
 }
 
 function authUrlFor(url: string, auth: GitAuth): string {
