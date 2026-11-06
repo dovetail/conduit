@@ -6,6 +6,7 @@ import { writeMcpConfigContent, deleteMcpConfig } from '../../main/utils/mcpConf
 import { writeClaudeConfig, deleteClaudeConfig } from '../../main/utils/claudeConfig'
 import { installCursorMcpConfig } from './cursorMcpConfig'
 import { installRepoCredentials } from './repoCredentials'
+import { materializeSshKey, type MaterializedSshKey } from '../sshKey'
 import { startMcpAuthRelay, type McpAuthRelay } from './mcpAuthRelay'
 import { createConfiguredWorktree, removeWorktree, runGit, buildAuthUrl, configureWorktreeGit, DEFAULT_GIT_TIMEOUT_MS } from '../gitOps'
 import { buildClaudeArgs, parseClaudeEvents } from '../../main/execution/adapters/claude'
@@ -40,42 +41,71 @@ export class LocalWorkerFactory implements WorkerFactory {
           : WORKSPACES_BASE
     await assertVolumeHasSpace(volumeDir, 'start this run')
 
-    // 1. Materialize the workspace.
-    let workspacePath: string
+    // 1. Materialize the workspace. A deploy key is written first: the clone
+    // needs it, and so does the agent's `git push` (via GIT_SSH_COMMAND).
+    const ws = spec.workspace
+    const wsRepo = ws.kind === 'worktree' || ws.kind === 'repo-clone' ? ws.repo : undefined
+    const sshKey = wsRepo?.sshPrivateKey
+      ? materializeSshKey(
+          { privateKey: wsRepo.sshPrivateKey, knownHosts: wsRepo.sshKnownHosts },
+          `conduit-cred-${spec.runId}-ssh-`
+        )
+      : undefined
+    const disposeSshKey = (): void => {
+      try {
+        sshKey?.dispose()
+      } catch (err) {
+        console.error(`[workers/local] Failed to remove SSH key for run ${spec.runId}:`, err)
+      }
+    }
+    let workspacePath: string | undefined
     let worktreeClonePath: string | undefined
     let ephemeral = false
-    const ws = spec.workspace
-    if (ws.kind === 'worktree') {
-      await createConfiguredWorktree(ws.clonePath, ws.worktreeDir, ws.repo.defaultBranch, {
-        url: ws.repo.url,
-        token: ws.repo.token,
-        authorName: ws.repo.authorName,
-        authorEmail: ws.repo.authorEmail,
-      })
-      workspacePath = ws.worktreeDir
-      worktreeClonePath = ws.clonePath
-    } else if (ws.kind === 'fixedDir') {
-      workspacePath = ws.path
-    } else if (ws.kind === 'ephemeral') {
-      workspacePath = createWorkspace(spec.runId)
-      ephemeral = true
-    } else {
-      // repo-clone: fresh shallow clone from the remote — how workers with no
-      // access to the server's bare clones (remote hosts, EKS/Fargate tasks)
-      // materialize the checkout. The clone dir is disposable → ephemeral.
-      workspacePath = createWorkspace(spec.runId)
-      ephemeral = true
-      const url = ws.repo.token ? buildAuthUrl(ws.repo.url, ws.repo.token) : ws.repo.url
-      await runGit(
-        ['clone', '--depth', '1', '--branch', ws.repo.defaultBranch, url, workspacePath],
-        { timeoutMs: DEFAULT_GIT_TIMEOUT_MS }
-      )
-      await configureWorktreeGit(workspacePath, {
-        url: ws.repo.url,
-        token: ws.repo.token,
-        authorName: ws.repo.authorName,
-        authorEmail: ws.repo.authorEmail,
-      })
+    try {
+      if (ws.kind === 'worktree') {
+        await createConfiguredWorktree(
+          ws.clonePath,
+          ws.worktreeDir,
+          ws.repo.defaultBranch,
+          {
+            url: ws.repo.url,
+            token: ws.repo.token,
+            tokenUsername: ws.repo.tokenUsername,
+            authorName: ws.repo.authorName,
+            authorEmail: ws.repo.authorEmail,
+          },
+          sshKey?.env
+        )
+        workspacePath = ws.worktreeDir
+        worktreeClonePath = ws.clonePath
+      } else if (ws.kind === 'fixedDir') {
+        workspacePath = ws.path
+      } else if (ws.kind === 'ephemeral') {
+        workspacePath = createWorkspace(spec.runId)
+        ephemeral = true
+      } else {
+        // repo-clone: fresh shallow clone from the remote — how workers with no
+        // access to the server's bare clones (remote hosts, EKS/Fargate tasks)
+        // materialize the checkout. The clone dir is disposable → ephemeral.
+        workspacePath = createWorkspace(spec.runId)
+        ephemeral = true
+        const url = ws.repo.token ? buildAuthUrl(ws.repo.url, ws.repo.token, ws.repo.tokenUsername) : ws.repo.url
+        await runGit(
+          ['clone', '--depth', '1', '--branch', ws.repo.defaultBranch, url, workspacePath],
+          { timeoutMs: DEFAULT_GIT_TIMEOUT_MS, env: sshKey?.env }
+        )
+        await configureWorktreeGit(workspacePath, {
+          url: ws.repo.url,
+          token: ws.repo.token,
+          tokenUsername: ws.repo.tokenUsername,
+          authorName: ws.repo.authorName,
+          authorEmail: ws.repo.authorEmail,
+        })
+      }
+    } catch (err) {
+      disposeSshKey()
+      if (ephemeral && workspacePath) deleteWorkspace(workspacePath)
+      throw err
     }
 
     let relay: McpAuthRelay | undefined
@@ -83,11 +113,12 @@ export class LocalWorkerFactory implements WorkerFactory {
       if (spec.mcpConfigContent && spec.mcpOAuthServerKeys?.length) {
         relay = await startMcpAuthRelay(spec.mcpConfigContent, spec.mcpOAuthServerKeys)
       }
-      return await this.spawn(spec, sink, workspacePath, worktreeClonePath, ephemeral, relay)
+      return await this.spawn(spec, sink, workspacePath, worktreeClonePath, ephemeral, relay, sshKey)
     } catch (err) {
       // Roll back everything this factory created so a failed start never
       // orphans a multi-GB worktree or token-carrying config file.
       void relay?.close()
+      disposeSshKey()
       deleteMcpConfig(spec.runId)
       deleteClaudeConfig(spec.runId)
       try {
@@ -106,7 +137,8 @@ export class LocalWorkerFactory implements WorkerFactory {
     workspacePath: string,
     worktreeClonePath: string | undefined,
     ephemeral: boolean,
-    relay: McpAuthRelay | undefined
+    relay: McpAuthRelay | undefined,
+    sshKey: MaterializedSshKey | undefined
   ): Promise<WorkerHandle> {
     // 2. Write the MCP config. Claude/Amp read it by path (--mcp-config);
     // cursor-agent has no such flag, so it is merged into the workspace's
@@ -151,11 +183,18 @@ export class LocalWorkerFactory implements WorkerFactory {
       ? installRepoCredentials({ runId: spec.runId, workspacePath, repo, env })
       : undefined
     Object.assign(env, repoCredentials?.env)
+    // An agent's own GIT_SSH_COMMAND (explicit envVar) wins over the deploy key.
+    if (sshKey && !(spec.env && 'GIT_SSH_COMMAND' in spec.env)) Object.assign(env, sshKey.env)
     const disposeRepoCredentials = (): void => {
       try {
         repoCredentials?.dispose()
       } catch (err) {
         console.error(`[workers/local] Failed to remove credentials for run ${spec.runId}:`, err)
+      }
+      try {
+        sshKey?.dispose()
+      } catch (err) {
+        console.error(`[workers/local] Failed to remove SSH key for run ${spec.runId}:`, err)
       }
     }
 

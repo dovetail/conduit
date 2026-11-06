@@ -56,7 +56,7 @@ function writeFileAtomic(filePath: string, content: string, mode: number): void 
 export function installRepoCredentials(opts: {
   runId: string
   workspacePath: string
-  repo: { url: string; token?: string }
+  repo: { url: string; token?: string; tokenUsername?: string }
   env: NodeJS.ProcessEnv
 }): RepoCredentials | undefined {
   const { runId, workspacePath, repo, env } = opts
@@ -91,8 +91,10 @@ export function installRepoCredentials(opts: {
       if (token === current) return
       writeFileAtomic(tokenPath, token, 0o600)
       const origin = (await runGit(['remote', 'get-url', 'origin'], { cwd: workspacePath }).catch(() => '')).trim()
-      if (origin === buildAuthUrl(repo.url, current)) {
-        await runGit(['remote', 'set-url', 'origin', buildAuthUrl(repo.url, token)], { cwd: workspacePath })
+      if (origin === buildAuthUrl(repo.url, current, repo.tokenUsername)) {
+        await runGit(['remote', 'set-url', 'origin', buildAuthUrl(repo.url, token, repo.tokenUsername)], {
+          cwd: workspacePath,
+        })
       }
       current = token
     },

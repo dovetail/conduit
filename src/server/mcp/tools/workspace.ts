@@ -11,8 +11,8 @@ import { canAccessEntity } from '../../../main/db/queries/access'
 import { isAuthEnabled } from '../../auth/config'
 import { ClientError } from '../../errors'
 import { checkRunnerClis } from '../../runnerCli'
-import { testRepoConnection } from '../../gitOps'
-import { resolveTestToken, withEncryptedKey } from '../../repoCredentials'
+import { assertAuthMatchesUrl, runConnectionTest, withEncryptedSecrets } from '../../repoCredentials'
+import { generateSshKeyPair } from '../../sshKey'
 import { redactGlobalMcp, redactPublishTarget, redactUrl } from '../redact'
 import { errorMessage, registerTool, type ToolEnv } from '../registry'
 import { failureKind, summarizeRun } from './runs'
@@ -33,9 +33,7 @@ function assertRepositoryInput(input: RepositoryInput): void {
   if (parsed && (parsed.username || parsed.password)) {
     throw new ClientError('Do not embed credentials in the URL; set authMethod and its credentials instead.')
   }
-  if ((input.authMethod === 'githubapp' || input.authMethod === 'pat') && parsed?.protocol !== 'https:') {
-    throw new ClientError(`authMethod "${input.authMethod}" needs an https:// clone URL.`)
-  }
+  assertAuthMatchesUrl(input)
   if (input.authMethod === 'githubapp') {
     if (!input.githubAppId || !/^\d+$/.test(input.githubAppId)) {
       throw new ClientError('GitHub App auth needs a numeric githubAppId.')
@@ -45,6 +43,14 @@ function assertRepositoryInput(input: RepositoryInput): void {
     }
   } else if (input.githubAppId || input.githubPrivateKey) {
     throw new ClientError('githubAppId and githubPrivateKey are only used with authMethod "githubapp".')
+  }
+  if (input.authMethod === 'gitlab') {
+    if (!input.gitlabToken?.trim()) throw new ClientError('GitLab auth needs gitlabToken (a personal, project, or group access token).')
+  } else if (input.gitlabToken) {
+    throw new ClientError('gitlabToken is only used with authMethod "gitlab".')
+  }
+  if (input.authMethod !== 'sshkey' && (input.sshPrivateKey || input.sshKnownHosts)) {
+    throw new ClientError('sshPrivateKey and sshKnownHosts are only used with authMethod "sshkey".')
   }
 }
 
@@ -60,6 +66,11 @@ function presentRepository(repo: Repository) {
     lastSyncedAt: repo.lastSyncedAt ? new Date(repo.lastSyncedAt).toISOString() : undefined,
     githubAppId: repo.githubAppId,
     hasGithubKey: repo.hasGithubKey,
+    hasGitlabToken: repo.hasGitlabToken,
+    hasSshKey: repo.hasSshKey,
+    sshPublicKey: repo.sshPublicKey,
+    sshKeyFingerprint: repo.sshKeyFingerprint,
+    sshHostKeyPinned: !!repo.sshKnownHosts,
   }
 }
 
@@ -149,22 +160,44 @@ export function registerWorkspaceTools(server: McpServer, env: ToolEnv): void {
     name: 'create_repository',
     title: 'Create repository',
     description:
-      'Add a managed git repository owned by you, then start its first sync in the background (poll list_repositories for syncStatus). For authMethod "githubapp" pass githubAppId and githubPrivateKey (the PEM). The key is encrypted at rest and never returned; responses only report hasGithubKey. Use test_repository_connection to check the credential.',
+      'Add a managed git repository owned by you, then start its first sync in the background (poll list_repositories for syncStatus). For authMethod "githubapp" pass githubAppId and githubPrivateKey (the PEM). For "gitlab" pass gitlabToken (an access token with read_repository + write_repository; works with self-managed GitLab too). For "sshkey" (any git host over SSH) either pass sshPrivateKey or set generateSshKey: true — Conduit then creates an ed25519 key and returns only its sshPublicKey, which the user must add as a deploy key (with write access if agents push) before the sync can succeed; then call sync_repository. Secrets are encrypted at rest and never returned. Use test_repository_connection to check the credential.',
     access: 'write',
     openWorld: true,
     input: {
       name: z.string().min(1),
-      url: z.string().min(1).describe('Clone URL, e.g. "https://github.com/org/repo.git". No embedded credentials.'),
+      url: z
+        .string()
+        .min(1)
+        .describe('Clone URL, e.g. "https://github.com/org/repo.git", or "git@gitlab.com:group/project.git" for sshkey. No embedded credentials.'),
       defaultBranch: z.string().min(1).optional().describe("Default 'main'."),
       authMethod: z
-        .enum(['none', 'pat', 'ssh', 'githubapp'])
-        .describe("'none' (public), 'pat' (the server's GitHub PAT), 'ssh' (server SSH agent), or 'githubapp'."),
+        .enum(['none', 'pat', 'ssh', 'githubapp', 'gitlab', 'sshkey'])
+        .describe(
+          "'none' (public), 'pat' (the server's GitHub PAT), 'ssh' (server SSH agent), 'githubapp', 'gitlab' (per-repo GitLab access token over HTTPS), or 'sshkey' (per-repo SSH deploy key, any host)."
+        ),
       githubAppId: z.string().optional().describe('GitHub App ID (numeric). githubapp only.'),
       githubPrivateKey: z.string().optional().describe('GitHub App private key PEM. githubapp only. Write-only.'),
+      gitlabToken: z.string().optional().describe('GitLab access token. gitlab only. Write-only.'),
+      sshPrivateKey: z.string().optional().describe('SSH private key (OpenSSH or PEM, no passphrase). sshkey only. Write-only.'),
+      generateSshKey: z.boolean().optional().describe('sshkey only: generate the deploy key server-side instead of passing sshPrivateKey.'),
+      sshKnownHosts: z
+        .string()
+        .optional()
+        .describe('sshkey only: known_hosts lines pinning the host key. Omit to trust the host key seen on first sync.'),
       commitAuthorName: z.string().optional().describe('Git author name for agent commits.'),
       commitAuthorEmail: z.string().optional().describe('Git author email for agent commits.'),
     },
     run: async (args, { caller, deps }) => {
+      if (args.generateSshKey && args.sshPrivateKey) {
+        throw new ClientError('Pass either sshPrivateKey or generateSshKey, not both.')
+      }
+      if (args.generateSshKey && args.authMethod !== 'sshkey') {
+        throw new ClientError('generateSshKey is only used with authMethod "sshkey".')
+      }
+      const sshPrivateKey = args.generateSshKey ? generateSshKeyPair('conduit-deploy-key').privateKey : args.sshPrivateKey
+      if (args.authMethod === 'sshkey' && !sshPrivateKey?.trim()) {
+        throw new ClientError('SSH deploy key auth needs sshPrivateKey, or generateSshKey: true.')
+      }
       const input: RepositoryInput = {
         name: args.name.trim(),
         url: args.url.trim(),
@@ -172,11 +205,14 @@ export function registerWorkspaceTools(server: McpServer, env: ToolEnv): void {
         authMethod: args.authMethod,
         githubAppId: args.githubAppId?.trim() || undefined,
         githubPrivateKey: args.githubPrivateKey,
+        gitlabToken: args.gitlabToken?.trim() || undefined,
+        sshPrivateKey,
+        sshKnownHosts: args.sshKnownHosts?.trim() || undefined,
         commitAuthorName: args.commitAuthorName?.trim() || undefined,
         commitAuthorEmail: args.commitAuthorEmail?.trim() || undefined,
       }
       assertRepositoryInput(input)
-      const repo = await createRepository(withEncryptedKey(input), caller.userId)
+      const repo = await createRepository(withEncryptedSecrets(input), caller.userId)
       deps.triggerRepoSync(repo.id).catch((err) =>
         console.error(`[mcp] Initial sync failed for repo ${repo.id}:`, err)
       )
@@ -188,7 +224,7 @@ export function registerWorkspaceTools(server: McpServer, env: ToolEnv): void {
     name: 'test_repository_connection',
     title: 'Test repository connection',
     description:
-      "Check a repository's stored credential: resolve its token (minting a GitHub App installation token when needed) and list the remote's branches. Nothing is changed, and the token is never returned.",
+      "Check a repository's stored credential: resolve its token or deploy key (minting a GitHub App installation token when needed) and list the remote's branches. Nothing is changed, and no secret is returned.",
     access: 'read',
     openWorld: true,
     input: { repositoryId: z.string() },
@@ -198,8 +234,8 @@ export function registerWorkspaceTools(server: McpServer, env: ToolEnv): void {
         throw new ClientError(`Repository "${repositoryId}" was not found or is not accessible to you.`)
       }
       try {
-        const token = await resolveTestToken({ url: repo.url, authMethod: repo.authMethod, repoId: repo.id })
-        return { repositoryId, success: true, message: await testRepoConnection(repo.url, token) }
+        const message = await runConnectionTest({ url: repo.url, authMethod: repo.authMethod, repoId: repo.id })
+        return { repositoryId, success: true, message }
       } catch (err) {
         return { repositoryId, success: false, message: errorMessage(err) }
       }

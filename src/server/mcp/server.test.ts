@@ -379,7 +379,11 @@ describe('Conduit MCP server', () => {
     const ok = await call(client, 'test_repository_connection', { repositoryId: created.json.id })
     expect(ok.json).toEqual({ repositoryId: created.json.id, success: true, message: 'Connected — 3 branches found' })
     expect(resolveRepoToken).toHaveBeenCalledWith({ id: created.json.id, url: 'https://github.com/acme/p.git', authMethod: 'githubapp' })
-    expect(testRepoConnection).toHaveBeenCalledWith('https://github.com/acme/p.git', 'ghs_installation')
+    expect(testRepoConnection).toHaveBeenCalledWith('https://github.com/acme/p.git', {
+      token: 'ghs_installation',
+      tokenUsername: undefined,
+      env: {},
+    })
     expect(ok.text).not.toContain('ghs_installation')
 
     vi.mocked(resolveRepoToken).mockRejectedValueOnce(new Error('GitHub App (id 7) is not installed for acme/p'))

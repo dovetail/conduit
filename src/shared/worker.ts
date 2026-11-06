@@ -18,8 +18,14 @@ import type { RunnerType, RunEventInit } from './types'
 export interface RunSpecRepo {
   url: string
   defaultBranch: string
-  /** Short-lived push/read token (PAT or GitHub App installation token). */
+  /** Push/read token (GitHub PAT, GitHub App installation token, GitLab access token). */
   token?: string
+  /** Username paired with `token` in the HTTPS URL (default `x-access-token`; GitLab: `oauth2`). */
+  tokenUsername?: string
+  /** SSH deploy key for SSH clone URLs. Workers without support ignore it. */
+  sshPrivateKey?: string
+  /** Pinned known_hosts for `sshPrivateKey`; absent → accept a new host key on first use. */
+  sshKnownHosts?: string
   authorName: string
   authorEmail: string
 }

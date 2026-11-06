@@ -54,7 +54,8 @@ import {
 } from '../main/db/queries/repositories'
 import { RepoSyncService, repositoryUpdateNeedsSync } from './repoSync'
 import { DataDirSweeper, sweepOnce, getStorageUsage } from './dataDirSweeper'
-import { resolveTestToken, withEncryptedKey } from './repoCredentials'
+import { assertAuthMatchesUrl, runConnectionTest, withEncryptedSecrets } from './repoCredentials'
+import { generateSshKeyPair, sshKeyFingerprint } from './sshKey'
 import { isUrlMcpServer } from '../shared/mcp'
 import { testPublishTarget, checkPublishTargetHealth } from './publisher'
 import {
@@ -347,10 +348,9 @@ const handlers: Record<string, HandlerFn> = {
   'repos:list': (_args, _ws, ctx) => Promise.resolve(listRepositories(ctx.userId, ctx.userGroupIds)),
   'repos:get': ([id]) => Promise.resolve(getRepository(id as string)),
   'repos:create': async ([data], _ws, ctx) => {
-    const repo = await createRepository(
-      withEncryptedKey(data as RepositoryInput),
-      ctx.userId
-    )
+    const input = data as RepositoryInput
+    assertAuthMatchesUrl(input)
+    const repo = await createRepository(withEncryptedSecrets(input), ctx.userId)
     repoSyncService.triggerSync(repo.id).catch((err) =>
       console.error(`[server] Initial sync failed for repo ${repo.id}:`, err)
     )
@@ -360,17 +360,26 @@ const handlers: Record<string, HandlerFn> = {
     if (!(await canAccessEntity('repository', id as string, ctx.userId, ctx.userGroupIds))) {
       throw new ClientError('Access denied')
     }
-    // GitHub App credentials are sensitive secrets — only the owner may set or
-    // change them, even though shared users can edit other repo fields.
+    // Credentials are sensitive secrets — only the owner may set or change
+    // them, even though shared users can edit other repo fields. Known hosts
+    // are included: replacing the pinned host key is how a stored deploy key
+    // would be pointed at an impostor host.
     const input = data as Partial<RepositoryInput>
-    if (
-      (input.githubAppId !== undefined || input.githubPrivateKey !== undefined) &&
-      !(await isEntityOwner('repository', id as string, ctx.userId))
-    ) {
-      throw new Error('Only the owner can change GitHub App credentials')
-    }
     const existing = await getRepository(id as string)
-    const updated = await updateRepository(id as string, withEncryptedKey(input))
+    const changesCredentials =
+      (input.githubAppId !== undefined && input.githubAppId !== existing?.githubAppId) ||
+      !!input.githubPrivateKey ||
+      !!input.gitlabToken?.trim() ||
+      !!input.sshPrivateKey?.trim() ||
+      (input.sshKnownHosts !== undefined &&
+        (input.sshKnownHosts.trim() || undefined) !== (existing?.sshKnownHosts?.trim() || undefined))
+    if (changesCredentials && !(await isEntityOwner('repository', id as string, ctx.userId))) {
+      throw new ClientError('Only the owner can change repository credentials')
+    }
+    if (existing) {
+      assertAuthMatchesUrl({ url: input.url ?? existing.url, authMethod: input.authMethod ?? existing.authMethod })
+    }
+    const updated = await updateRepository(id as string, withEncryptedSecrets(input))
     if (existing && repositoryUpdateNeedsSync(input, existing)) {
       repoSyncService.triggerSync(id as string).catch((err) =>
         console.error(`[server] Re-sync after update failed for repo ${id}:`, err)
@@ -389,7 +398,6 @@ const handlers: Record<string, HandlerFn> = {
     await repoSyncService.triggerSync(id as string)
   },
   'repos:testConnection': async ([data], _ws, ctx) => {
-    const { testRepoConnection } = await import('./gitOps')
     const input = data as RepoTestConnectionInput
     // When testing against a stored key, ensure the caller can actually access
     // that repo — otherwise its credentials could be exercised by anyone.
@@ -400,13 +408,15 @@ const handlers: Record<string, HandlerFn> = {
       return { success: false, message: 'Access denied' }
     }
     try {
-      const token = await resolveTestToken(input)
-      const message = await testRepoConnection(input.url, token)
-      return { success: true, message }
+      return { success: true, message: await runConnectionTest(input) }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       return { success: false, message }
     }
+  },
+  'repos:generateSshKey': () => {
+    const pair = generateSshKeyPair('conduit-deploy-key')
+    return Promise.resolve({ ...pair, fingerprint: sshKeyFingerprint(pair.publicKey) })
   },
 
   // Publish Targets

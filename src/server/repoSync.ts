@@ -1,7 +1,9 @@
 import * as fs from 'fs'
 import { listRepositories, getRepository, updateRepository } from '../main/db/queries/repositories'
 import { cloneRepo, fetchRepo, isDiskFullError, diskFullMessage } from './gitOps'
-import { resolveRepoToken } from './githubApp'
+import { missingCredentialMessage, resolveRepoAuth, toGitAuth, type ResolvedRepoAuth } from './repoAuth'
+import { gitAuthHint } from './repoCredentials'
+import { withSshKey } from './sshKey'
 import { DEV_CONTEXT } from './auth/config'
 import { reporter } from './observability'
 import type { BroadcastFn } from './runner'
@@ -40,7 +42,7 @@ export function isInSyncBackoff(state: SyncFailureState | undefined, now: number
 
 /** True when a git/auth error message is a rejected credential, not a transient fault. */
 export function isRepoAuthenticationError(message: string): boolean {
-  return /authentication failed|invalid username or token|could not read username|repository not found/i.test(
+  return /authentication failed|invalid username or token|could not read username|repository not found|HTTP Basic: Access denied|permission denied \(publickey|host key verification failed/i.test(
     message
   )
 }
@@ -48,13 +50,15 @@ export function isRepoAuthenticationError(message: string): boolean {
 /** Auth-relevant repository updates should force an immediate sync retry. */
 export function repositoryUpdateNeedsSync(
   input: Partial<RepositoryInput>,
-  stored: Pick<Repository, 'url' | 'authMethod' | 'githubAppId'>
+  stored: Pick<Repository, 'url' | 'authMethod' | 'githubAppId' | 'sshKnownHosts'>
 ): boolean {
-  if (input.githubPrivateKey) return true
+  if (input.githubPrivateKey || input.gitlabToken?.trim() || input.sshPrivateKey?.trim()) return true
   return (
     (input.url !== undefined && input.url !== stored.url) ||
     (input.authMethod !== undefined && input.authMethod !== stored.authMethod) ||
-    (input.githubAppId !== undefined && input.githubAppId !== stored.githubAppId)
+    (input.githubAppId !== undefined && input.githubAppId !== stored.githubAppId) ||
+    (input.sshKnownHosts !== undefined &&
+      (input.sshKnownHosts.trim() || undefined) !== (stored.sshKnownHosts?.trim() || undefined))
   )
 }
 
@@ -182,60 +186,44 @@ export class RepoSyncService {
       return
     }
 
-    // Credential resolution can throw (e.g. GitHub App misconfigured). Treat it
-    // as a sync failure so it also backs off, rather than escaping to syncAll.
-    let token: string | undefined
+    // Credential resolution can throw (e.g. GitHub App misconfigured, or a
+    // stored secret that no longer decrypts). Treat it as a sync failure so it
+    // also backs off, rather than escaping to syncAll.
+    let auth: ResolvedRepoAuth
     try {
-      token = await resolveRepoToken(repo)
+      auth = await resolveRepoAuth(repo)
     } catch (err) {
       await this.recordSyncFailure(repoId, err, 'auth')
       return
     }
 
-    // An HTTPS repo that declares an auth method but resolves no token must NOT
+    // A repo that declares an auth method but resolves no credential must NOT
     // be cloned unauthenticated: git then fails every attempt with "could not
     // read Username", which (before backoff) hammered GitHub and flooded Sentry
     // with hundreds of identical errors. Fail fast with an actionable reason.
     // This is an expected user misconfiguration, not an app bug — mark it
     // expected so it's recorded against the repo but not reported as an error.
-    if (
-      !token &&
-      repo.url.startsWith('https://') &&
-      (repo.authMethod === 'pat' || repo.authMethod === 'githubapp')
-    ) {
-      await this.recordSyncFailure(
-        repoId,
-        new Error(
-          repo.authMethod === 'pat'
-            ? 'No GitHub credential resolved for this HTTPS repo (auth method: PAT). ' +
-              'Configure a global GitHub PAT, or switch the repo to GitHub App authentication.'
-            : 'No GitHub App token could be minted for this HTTPS repo. ' +
-              'Check the App is installed on the repository and its App ID + private key are configured.'
-        ),
-        'auth',
-        { expected: true }
-      )
+    const missing = missingCredentialMessage(repo, auth)
+    if (missing) {
+      await this.recordSyncFailure(repoId, new Error(missing), 'auth', { expected: true })
       return
     }
 
     const needsClone = repo.syncStatus === 'pending' || !fs.existsSync(repo.clonePath)
-
-    if (needsClone) {
-      await this.updateStatus(repoId, 'cloning')
-      try {
-        await cloneRepo(repo.url, repo.clonePath, repo.defaultBranch, token)
-        await this.recordSyncSuccess(repoId)
-      } catch (err) {
-        await this.recordSyncFailure(repoId, err, 'clone')
-      }
-    } else {
-      await this.updateStatus(repoId, 'syncing')
-      try {
-        await fetchRepo(repo.clonePath, repo.url, repo.defaultBranch, token)
-        await this.recordSyncSuccess(repoId)
-      } catch (err) {
-        await this.recordSyncFailure(repoId, err, 'fetch')
-      }
+    const op = needsClone ? 'clone' : 'fetch'
+    await this.updateStatus(repoId, needsClone ? 'cloning' : 'syncing')
+    try {
+      const { learnedKnownHosts } = await withSshKey(auth.sshKey, (env) =>
+        needsClone
+          ? cloneRepo(repo.url, repo.clonePath!, repo.defaultBranch, toGitAuth(auth, env))
+          : fetchRepo(repo.clonePath!, repo.url, repo.defaultBranch, toGitAuth(auth, env))
+      )
+      // Trust on first use: pin the host key ssh accepted on this first
+      // contact, so every later connection (syncs and runs) checks it strictly.
+      if (learnedKnownHosts) await updateRepository(repoId, { sshKnownHosts: learnedKnownHosts })
+      await this.recordSyncSuccess(repoId)
+    } catch (err) {
+      await this.recordSyncFailure(repoId, err, op)
     }
   }
 
@@ -278,7 +266,7 @@ export class RepoSyncService {
     const message = diskFull
       ? diskFullMessage(syncAction(op))
       : authFailed
-        ? REPO_AUTH_FAILED_MESSAGE
+        ? [REPO_AUTH_FAILED_MESSAGE, gitAuthHint(raw)].filter(Boolean).join(' ')
         : raw
     if (!prev) {
       const tags = { component: 'repoSync', repoId, op }
