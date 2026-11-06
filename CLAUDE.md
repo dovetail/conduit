@@ -438,13 +438,18 @@ server-side, exposed with its `SHA256:` fingerprint so the user can register it)
 `materializeSshKey` (`src/server/sshKey.ts`) writes a 0600 temp key + known_hosts and sets
 `GIT_SSH_COMMAND` (`IdentitiesOnly`, no agent, `BatchMode`). Host keys are trust-on-first-use:
 with nothing pinned, the first successful sync records what it saw; once pinned,
-`StrictHostKeyChecking=yes`, and a changed URL clears the pin. Remote RunSpecs carry the key
-(`sshPrivateKey`/`sshKnownHosts`); workers older than this ignore it.
+`StrictHostKeyChecking=yes`, and a changed URL clears the pin. ssh_config is ignored
+(`-F /dev/null`) and pins are stored unhashed. Runs refuse an `sshkey` repo with no pin, so
+workers never clone on trust-on-first-use. Remote RunSpecs carry the key
+(`sshPrivateKey`/`sshKnownHosts`); workers older than this ignore it. The UI validates an
+uploaded key and shows its public half before saving (`repos:describeSshKey`).
 
-**Guards**: credentials must match the URL scheme (`assertAuthMatchesUrl` — tokens need
-https, `sshkey` needs an SSH URL); Test Connection with a *stored* credential only targets
-the repo's own host (`gitRemoteHost`), so a token or key can't be replayed at another server;
-any credential or known-hosts change is owner-only.
+**Guards**: clone URLs go through `src/shared/repoUrl.ts` (shared by WS, MCP, and the UI):
+credentials must match the URL scheme (tokens need https, `sshkey` needs an SSH URL) and
+credentials embedded in an HTTPS URL are refused. Test Connection with a *stored* credential
+only targets the repo's own host (`gitRemoteHost`). Changing the credential, known hosts,
+auth method, or the URL's host is owner-only (`changesRepositoryCredentials`), so a shared
+editor can't replay a stored token or key at another server.
 
 **GitHub App auth**: two columns on the `repositories` table — `github_app_id` (TEXT, the App ID, not secret) and `github_private_key_enc` (TEXT, the PEM **encrypted** at rest). The PEM is encrypted with **AES-256-GCM** via `src/server/crypto.ts`; the key comes from `CONDUIT_SECRET_KEY` (see env-var table above).
 
