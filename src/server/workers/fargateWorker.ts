@@ -155,6 +155,26 @@ export function stopWaitVerdict(
   return elapsedMs >= stopVerifyTimeoutMs ? 'not-accepted' : 'continue'
 }
 
+/**
+ * Why a stopped task's containers exited — ECS's own `stoppedReason` is often
+ * just "Essential container in task exited", with the exit code (137 = killed,
+ * usually out of memory) and the container reason only on the container itself.
+ * Returns '' when ECS recorded nothing useful.
+ */
+export function describeStoppedContainers(
+  task: { containers?: Array<{ name?: string; exitCode?: number; reason?: string }>; stopCode?: string } | undefined
+): string {
+  const parts: string[] = []
+  for (const c of task?.containers ?? []) {
+    if (c.exitCode === undefined && !c.reason) continue
+    const exit = c.exitCode === undefined ? '' : ` exited ${c.exitCode}`
+    const why = c.reason?.trim() ? `${exit ? ':' : ''} ${c.reason.trim()}` : ''
+    parts.push(`container ${c.name ?? 'unknown'}${exit}${why}`)
+  }
+  if (task?.stopCode) parts.push(`stop code ${task.stopCode}`)
+  return parts.join('; ')
+}
+
 function formatTaskStatus(task: TaskStopSnapshot | undefined): string {
   if (!task) return 'missing'
   const last = task.lastStatus ?? 'unknown'
@@ -396,8 +416,10 @@ export class FargateWorkerFactory implements WorkerFactory {
         if (settled) break
         if (task?.lastStatus === 'STOPPED') {
           const reason = task.stoppedReason?.trim() || 'STOPPED'
+          const detail = describeStoppedContainers(task)
           throw new Error(
-            `Fargate task for run ${runId} stopped before the worker connected: ${reason}`
+            `Fargate task for run ${runId} stopped before the worker connected: ${reason}` +
+              (detail ? ` (${detail})` : '')
           )
         }
         delay = Math.min(delay * 2, BACKOFF_CAP_MS)

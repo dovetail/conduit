@@ -118,7 +118,9 @@ export function killedBySignalLastLine(signal?: string): string {
   const sig = signal ? ` (${signal})` : ''
   return (
     `✗ Run process was killed${sig} — typically out-of-memory or disk-pressure ` +
-    'eviction. Check the Conduit pod memory limit and data volume.'
+    'eviction. Check the memory limit and free disk of the host that ran it: the ' +
+    'Conduit pod for local runs, or the worker task for remote/Fargate runs ' +
+    '(a Fargate agent can raise its workerMemoryMib).'
   )
 }
 

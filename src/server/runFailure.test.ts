@@ -69,6 +69,13 @@ describe('cliKillDiagnostic', () => {
     expect(cliKillDiagnostic(null, 'SIGKILL')).toMatch(/killed \(SIGKILL\)/)
     expect(cliKillDiagnostic(137, null)).toMatch(/killed \(SIGKILL\)/)
   })
+
+  it('points remote runs at the worker task, not only the Conduit pod', () => {
+    const text = cliKillDiagnostic(null, 'SIGKILL')
+    expect(text).toMatch(/Conduit pod for local runs/)
+    expect(text).toMatch(/worker task for remote\/Fargate runs/)
+    expect(text).toMatch(/workerMemoryMib/)
+  })
 })
 
 describe('classifyRunFailure', () => {
