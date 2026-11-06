@@ -1,5 +1,5 @@
 # ─── Build stage ─────────────────────────────────────────────────────────────
-FROM node:22-slim AS builder
+FROM node:24-slim AS builder
 
 WORKDIR /app
 
@@ -46,7 +46,7 @@ RUN --mount=type=secret,id=sentry_auth_token \
 RUN cp /tmp/global-bundle.pem out/main/db/global-bundle.pem
 
 # ─── Production stage ────────────────────────────────────────────────────────
-FROM node:22-slim
+FROM node:24-slim
 
 WORKDIR /app
 
