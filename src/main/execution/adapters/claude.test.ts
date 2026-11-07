@@ -81,6 +81,33 @@ describe('parseClaudeEvents', () => {
     ])
   })
 
+  it('attaches cost and token usage to the result event, including failed runs', () => {
+    const result = {
+      type: 'result',
+      duration_ms: 90_000,
+      duration_api_ms: 60_000,
+      num_turns: 6,
+      total_cost_usd: 1.25,
+      usage: { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 30, cache_creation_input_tokens: 40 },
+    }
+    const expected = {
+      costUsd: 1.25,
+      inputTokens: 10,
+      outputTokens: 20,
+      cacheReadTokens: 30,
+      cacheWriteTokens: 40,
+      numTurns: 6,
+      cliDurationMs: 90_000,
+      apiDurationMs: 60_000,
+    }
+    expect(parseClaudeEvents(line({ ...result, subtype: 'success' }))).toEqual([
+      { kind: 'result', isError: false, text: 'Completed', usage: expected },
+    ])
+    expect(parseClaudeEvents(line({ ...result, subtype: 'error_max_turns' }))).toEqual([
+      { kind: 'result', isError: true, text: 'Failed', usage: expected },
+    ])
+  })
+
   it('caps very large tool_result content', () => {
     const huge = 'x'.repeat(50_000)
     const events = parseClaudeEvents(

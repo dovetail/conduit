@@ -308,6 +308,14 @@ export function RunLogView({ runId, live = false, startedAt }: RunLogViewProps) 
                 </div>
               )
             }
+            if (e.kind === 'metering') {
+              if (!e.text?.trim()) return null
+              return (
+                <div key={i} className="px-1.5 py-0.5 font-mono text-xs tabular-nums text-[var(--text-secondary)]">
+                  {e.text.replace(/^\[Conduit metering\]\s*/, '')}
+                </div>
+              )
+            }
             return null
           })}
         </div>

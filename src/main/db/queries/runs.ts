@@ -1,7 +1,16 @@
 import { and, eq, desc, gte, inArray } from 'drizzle-orm'
 import { getDb } from '../index'
 import { runs } from '../schema'
-import type { ExecutionRun, RunStatus, TriggerContext } from '../../../shared/types'
+import type { ExecutionRun, RunStatus, RunUsage, TriggerContext } from '../../../shared/types'
+
+function parseUsage(raw: string | null): RunUsage | undefined {
+  if (!raw) return undefined
+  try {
+    return JSON.parse(raw) as RunUsage
+  } catch {
+    return undefined
+  }
+}
 
 function rowToExecutionRun(row: typeof runs.$inferSelect): ExecutionRun {
   return {
@@ -19,6 +28,7 @@ function rowToExecutionRun(row: typeof runs.$inferSelect): ExecutionRun {
     lastLine: row.lastLine ?? undefined,
     workerKind: row.workerKind ?? undefined,
     workerId: row.workerId ?? undefined,
+    usage: parseUsage(row.usage),
   }
 }
 
@@ -76,6 +86,7 @@ export async function createRun(
     startedBy: data.startedBy ?? null,
     workerKind: data.workerKind ?? null,
     workerId: data.workerId ?? null,
+    usage: data.usage ? JSON.stringify(data.usage) : null,
   })
 
   const created = await getRun(id)
@@ -97,6 +108,7 @@ function toUpdateValues(data: Partial<Omit<ExecutionRun, 'id'>>): Partial<typeof
   if ('lastLine' in data) updateValues.lastLine = data.lastLine ?? null
   if ('workerKind' in data) updateValues.workerKind = data.workerKind ?? null
   if ('workerId' in data) updateValues.workerId = data.workerId ?? null
+  if ('usage' in data) updateValues.usage = data.usage ? JSON.stringify(data.usage) : null
 
   return updateValues
 }

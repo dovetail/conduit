@@ -25,6 +25,7 @@ export function buildClaudeArgs(mcpConfigPath: string, effort?: string, strictMc
 
 import type { RunEventInit } from '../../../shared/types'
 import { capText } from '../../../shared/runEvents'
+import { parseRunUsage } from '../../../shared/usage'
 
 interface ContentBlock {
   type: string
@@ -296,7 +297,7 @@ export function parseClaudeEvents(line: string): RunEventInit[] {
 
     case 'result': {
       const ok = event.subtype === 'success'
-      events.push({ kind: 'result', isError: !ok, text: ok ? 'Completed' : 'Failed' })
+      events.push({ kind: 'result', isError: !ok, text: ok ? 'Completed' : 'Failed', usage: parseRunUsage(event) })
       break
     }
 
