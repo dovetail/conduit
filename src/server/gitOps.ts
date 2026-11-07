@@ -88,23 +88,49 @@ export function runGit(
   })
 }
 
+/** GitHub's username for token auth over HTTPS. GitLab accepts any username
+ *  with an access token; `oauth2` is the one it documents. */
+export const GITHUB_TOKEN_USERNAME = 'x-access-token'
+export const GITLAB_TOKEN_USERNAME = 'oauth2'
+
 /**
- * Inject a PAT into an HTTPS git URL for authentication.
- * Returns the URL unchanged if it's not HTTPS or no PAT is provided.
+ * How a git invocation authenticates to its remote. A bare string is shorthand
+ * for `{ token }` (GitHub's `x-access-token` username).
  */
-export function buildAuthUrl(url: string, pat?: string): string {
+export interface GitAuth {
+  /** HTTPS token injected into the URL's userinfo. */
+  token?: string
+  /** Username paired with `token`. */
+  tokenUsername?: string
+  /** Env overlay for the git process — e.g. `GIT_SSH_COMMAND` for a deploy key. */
+  env?: Record<string, string>
+}
+
+function normalizeAuth(auth: string | GitAuth | undefined): GitAuth {
+  return typeof auth === 'string' ? { token: auth } : (auth ?? {})
+}
+
+/**
+ * Inject a token into an HTTPS git URL for authentication.
+ * Returns the URL unchanged if it's not HTTPS or no token is provided.
+ */
+export function buildAuthUrl(url: string, pat?: string, username: string = GITHUB_TOKEN_USERNAME): string {
   if (!pat || !url.startsWith('https://')) return url
-  // Transform https://github.com/... → https://x-access-token:<pat>@github.com/...
-  return url.replace('https://', `https://x-access-token:${pat}@`)
+  // https://github.com/... → https://x-access-token:<pat>@github.com/...
+  return url.replace('https://', `https://${encodeURIComponent(username)}:${encodeURIComponent(pat)}@`)
+}
+
+function authUrlFor(url: string, auth: GitAuth): string {
+  return buildAuthUrl(url, auth.token, auth.tokenUsername)
 }
 
 /**
  * Test connectivity to a remote repository via `git ls-remote`.
  * Returns the default branch ref on success, or throws on failure.
  */
-export async function testRepoConnection(url: string, pat?: string): Promise<string> {
-  const authUrl = buildAuthUrl(url, pat)
-  const output = await runGit(['ls-remote', '--heads', authUrl])
+export async function testRepoConnection(url: string, auth?: string | GitAuth): Promise<string> {
+  const a = normalizeAuth(auth)
+  const output = await runGit(['ls-remote', '--heads', authUrlFor(url, a)], { env: a.env })
   const refCount = output.split('\n').filter((l) => l.trim()).length
   return `Connected — ${refCount} branch${refCount !== 1 ? 'es' : ''} found`
 }
@@ -139,16 +165,17 @@ export async function cloneRepo(
   url: string,
   clonePath: string,
   branch: string,
-  pat?: string
+  auth?: string | GitAuth
 ): Promise<void> {
-  const authUrl = buildAuthUrl(url, pat)
+  const a = normalizeAuth(auth)
+  const authUrl = authUrlFor(url, a)
   const tmpPath = `${clonePath}.cloning`
   clonesInProgress.add(tmpPath)
   try {
     // Clear any leftover from a previously-interrupted clone before starting.
     fs.rmSync(tmpPath, { recursive: true, force: true })
     try {
-      await runGit(['clone', '--bare', '--single-branch', '--branch', branch, authUrl, tmpPath])
+      await runGit(['clone', '--bare', '--single-branch', '--branch', branch, authUrl, tmpPath], { env: a.env })
     } catch (err) {
       fs.rmSync(tmpPath, { recursive: true, force: true })
       throw err
@@ -224,16 +251,17 @@ export async function fetchRepo(
   clonePath: string,
   url: string,
   branch: string,
-  pat?: string
+  auth?: string | GitAuth
 ): Promise<void> {
-  const authUrl = buildAuthUrl(url, pat)
+  const a = normalizeAuth(auth)
+  const authUrl = authUrlFor(url, a)
   await refreshStoredOriginUrl(clonePath, authUrl)
   // No `--prune`: with an explicit refspec it would delete the clone's only
   // branch the moment the branch disappears upstream, leaving a clone nothing
   // can be worktreed from. Without it that case fails loudly ("couldn't find
   // remote ref") and the last good ref survives. A single-branch bare clone has
   // no other refs to prune anyway.
-  await runGit(['fetch', authUrl, branchFetchRefspec(branch)], { cwd: clonePath })
+  await runGit(['fetch', authUrl, branchFetchRefspec(branch)], { cwd: clonePath, env: a.env })
 }
 
 /**
@@ -300,7 +328,8 @@ export function isGcAlreadyRunningError(message: string): boolean {
 export async function createWorktree(
   clonePath: string,
   worktreePath: string,
-  branch: string
+  branch: string,
+  env?: Record<string, string>
 ): Promise<void> {
   try {
     await runGit(['worktree', 'add', '--detach', worktreePath, branch], { cwd: clonePath })
@@ -325,8 +354,8 @@ export async function createWorktree(
   // git-lfs just errors — neither should fail an otherwise-good worktree. Objects
   // land in the shared bare clone, so repeated worktrees don't re-download.
   try {
-    await runGit(['lfs', 'fetch', '--all'], { cwd: worktreePath })
-    await runGit(['lfs', 'checkout'], { cwd: worktreePath })
+    await runGit(['lfs', 'fetch', '--all'], { cwd: worktreePath, env })
+    await runGit(['lfs', 'checkout'], { cwd: worktreePath, env })
   } catch (err) {
     console.warn(
       `[gitOps] git-lfs materialization skipped for ${worktreePath}: ${err instanceof Error ? err.message : String(err)}`
@@ -342,14 +371,24 @@ export async function createWorktree(
  * `token` should be a freshly-resolved repo credential; for SSH/none repos pass
  * no token and the existing origin (SSH or plain) is left untouched.
  */
+export interface WorktreeGitConfig {
+  url: string
+  token?: string
+  tokenUsername?: string
+  authorName: string
+  authorEmail: string
+}
+
 export async function configureWorktreeGit(
   worktreePath: string,
-  opts: { url: string; token?: string; authorName: string; authorEmail: string }
+  opts: WorktreeGitConfig
 ): Promise<void> {
   await runGit(['config', 'user.name', opts.authorName], { cwd: worktreePath })
   await runGit(['config', 'user.email', opts.authorEmail], { cwd: worktreePath })
   if (opts.token && opts.url.startsWith('https://')) {
-    await runGit(['remote', 'set-url', 'origin', buildAuthUrl(opts.url, opts.token)], { cwd: worktreePath })
+    await runGit(['remote', 'set-url', 'origin', buildAuthUrl(opts.url, opts.token, opts.tokenUsername)], {
+      cwd: worktreePath,
+    })
   }
 }
 
@@ -365,9 +404,10 @@ export async function createConfiguredWorktree(
   clonePath: string,
   worktreePath: string,
   branch: string,
-  config: { url: string; token?: string; authorName: string; authorEmail: string }
+  config: WorktreeGitConfig,
+  env?: Record<string, string>
 ): Promise<void> {
-  await createWorktree(clonePath, worktreePath, branch)
+  await createWorktree(clonePath, worktreePath, branch, env)
   try {
     await configureWorktreeGit(worktreePath, config)
   } catch (err) {

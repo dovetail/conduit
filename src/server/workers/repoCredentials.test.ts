@@ -61,6 +61,19 @@ describe('installRepoCredentials', () => {
     expect(git(workspace, 'remote', 'get-url', 'origin')).toBe(buildAuthUrl(URL, 'ghs_newer'))
   })
 
+  it("keeps a GitLab token's oauth2 username when re-pointing origin", async () => {
+    const glUrl = 'https://gitlab.example.com/g/p.git'
+    git(workspace, 'remote', 'set-url', 'origin', buildAuthUrl(glUrl, 'glpat-old', 'oauth2'))
+    creds = installRepoCredentials({
+      runId: RUN_ID,
+      workspacePath: workspace,
+      repo: { url: glUrl, token: 'glpat-old', tokenUsername: 'oauth2' },
+      env: { PATH: process.env.PATH },
+    })
+    await creds!.update('glpat-new')
+    expect(git(workspace, 'remote', 'get-url', 'origin')).toBe(buildAuthUrl(glUrl, 'glpat-new', 'oauth2'))
+  })
+
   it('leaves an origin the agent re-pointed alone', async () => {
     const c = install({ PATH: process.env.PATH })
     git(workspace, 'remote', 'set-url', 'origin', 'https://github.com/someone/fork.git')

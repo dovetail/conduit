@@ -29,6 +29,7 @@
     "e2e:remote": "node e2e/remote/run.mjs",
     "e2e:fargate": "node e2e/fargate/run.mjs",
     "e2e:mcp": "node e2e/mcp/run.mjs",
+    "e2e:gitlab": "node e2e/gitlab/run.mjs",
     "db:generate": "drizzle-kit generate",
     "seed": "tsx scripts/seed-global-mcps.ts",
     "db:up": "podman run -d --name conduit-pg -e POSTGRES_USER=conduit -e POSTGRES_PASSWORD=conduit -e POSTGRES_DB=conduit -p 5432:5432 -v conduit-pg:/var/lib/postgresql/data docker.io/library/postgres:16-alpine",

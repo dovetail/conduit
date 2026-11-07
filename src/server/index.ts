@@ -54,7 +54,14 @@ import {
 } from '../main/db/queries/repositories'
 import { RepoSyncService, repositoryUpdateNeedsSync } from './repoSync'
 import { DataDirSweeper, sweepOnce, getStorageUsage } from './dataDirSweeper'
-import { resolveTestToken, withEncryptedKey } from './repoCredentials'
+import {
+  assertAuthMatchesUrl,
+  assertRepositoryUrl,
+  changesRepositoryCredentials,
+  runConnectionTest,
+  withEncryptedSecrets,
+} from './repoCredentials'
+import { deriveSshPublicKey, generateSshKeyPair, sshKeyFingerprint } from './sshKey'
 import { isUrlMcpServer } from '../shared/mcp'
 import { testPublishTarget, checkPublishTargetHealth } from './publisher'
 import {
@@ -347,10 +354,9 @@ const handlers: Record<string, HandlerFn> = {
   'repos:list': (_args, _ws, ctx) => Promise.resolve(listRepositories(ctx.userId, ctx.userGroupIds)),
   'repos:get': ([id]) => Promise.resolve(getRepository(id as string)),
   'repos:create': async ([data], _ws, ctx) => {
-    const repo = await createRepository(
-      withEncryptedKey(data as RepositoryInput),
-      ctx.userId
-    )
+    const input = data as RepositoryInput
+    assertRepositoryUrl(input)
+    const repo = await createRepository(withEncryptedSecrets(input), ctx.userId)
     repoSyncService.triggerSync(repo.id).catch((err) =>
       console.error(`[server] Initial sync failed for repo ${repo.id}:`, err)
     )
@@ -360,18 +366,23 @@ const handlers: Record<string, HandlerFn> = {
     if (!(await canAccessEntity('repository', id as string, ctx.userId, ctx.userGroupIds))) {
       throw new ClientError('Access denied')
     }
-    // GitHub App credentials are sensitive secrets — only the owner may set or
-    // change them, even though shared users can edit other repo fields.
+    // Shared users can edit other repo fields, but not the credential, the
+    // auth method, or which host the credential is sent to.
     const input = data as Partial<RepositoryInput>
+    const existing = await getRepository(id as string)
+    if (!existing) throw new ClientError('Repository not found')
     if (
-      (input.githubAppId !== undefined || input.githubPrivateKey !== undefined) &&
+      changesRepositoryCredentials(input, existing) &&
       !(await isEntityOwner('repository', id as string, ctx.userId))
     ) {
-      throw new Error('Only the owner can change GitHub App credentials')
+      throw new ClientError('Only the owner can change repository credentials, auth method, or host')
     }
-    const existing = await getRepository(id as string)
-    const updated = await updateRepository(id as string, withEncryptedKey(input))
-    if (existing && repositoryUpdateNeedsSync(input, existing)) {
+    const next = { url: input.url ?? existing.url, authMethod: input.authMethod ?? existing.authMethod }
+    // A legacy URL with embedded credentials stays editable until the URL itself is changed.
+    if (input.url !== undefined && input.url !== existing.url) assertRepositoryUrl(next)
+    else assertAuthMatchesUrl(next)
+    const updated = await updateRepository(id as string, withEncryptedSecrets(input))
+    if (repositoryUpdateNeedsSync(input, existing)) {
       repoSyncService.triggerSync(id as string).catch((err) =>
         console.error(`[server] Re-sync after update failed for repo ${id}:`, err)
       )
@@ -385,11 +396,13 @@ const handlers: Record<string, HandlerFn> = {
     await deleteRepository(id as string)
     return Promise.resolve()
   },
-  'repos:triggerSync': async ([id]) => {
+  'repos:triggerSync': async ([id], _ws, ctx) => {
+    if (!(await canAccessEntity('repository', id as string, ctx.userId, ctx.userGroupIds))) {
+      throw new ClientError('Access denied')
+    }
     await repoSyncService.triggerSync(id as string)
   },
   'repos:testConnection': async ([data], _ws, ctx) => {
-    const { testRepoConnection } = await import('./gitOps')
     const input = data as RepoTestConnectionInput
     // When testing against a stored key, ensure the caller can actually access
     // that repo — otherwise its credentials could be exercised by anyone.
@@ -400,13 +413,24 @@ const handlers: Record<string, HandlerFn> = {
       return { success: false, message: 'Access denied' }
     }
     try {
-      const token = await resolveTestToken(input)
-      const message = await testRepoConnection(input.url, token)
-      return { success: true, message }
+      return { success: true, message: await runConnectionTest(input) }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       return { success: false, message }
     }
+  },
+  'repos:generateSshKey': () => {
+    const pair = generateSshKeyPair('conduit-deploy-key')
+    return Promise.resolve({ ...pair, fingerprint: sshKeyFingerprint(pair.publicKey) })
+  },
+  'repos:describeSshKey': ([privateKey]) => {
+    let publicKey: string
+    try {
+      publicKey = deriveSshPublicKey(String(privateKey ?? ''))
+    } catch (err) {
+      throw new ClientError((err as Error).message)
+    }
+    return Promise.resolve({ publicKey, fingerprint: sshKeyFingerprint(publicKey) })
   },
 
   // Publish Targets

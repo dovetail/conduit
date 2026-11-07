@@ -440,7 +440,15 @@ export interface PromptRevision {
 
 export type RepoSyncStatus = 'pending' | 'cloning' | 'ready' | 'syncing' | 'error'
 
-export type RepoAuthMethod = 'none' | 'pat' | 'ssh' | 'githubapp'
+/**
+ * - `none`      public repo, no credentials
+ * - `pat`       the server's global GitHub PAT
+ * - `ssh`       the server host's own SSH agent/keys
+ * - `githubapp` per-repo GitHub App (App ID + private key)
+ * - `gitlab`    per-repo GitLab access token (personal/project/group), HTTPS
+ * - `sshkey`    per-repo SSH deploy key (uploaded or generated) — any git host
+ */
+export type RepoAuthMethod = 'none' | 'pat' | 'ssh' | 'githubapp' | 'gitlab' | 'sshkey'
 
 export interface Repository {
   id: string
@@ -460,6 +468,19 @@ export interface Repository {
    * the key itself is never returned to the client (write-only).
    */
   hasGithubKey?: boolean
+  /** Whether a GitLab access token is stored ('gitlab'). The token is write-only. */
+  hasGitlabToken?: boolean
+  /** Whether an SSH deploy key is stored ('sshkey'). The private key is write-only. */
+  hasSshKey?: boolean
+  /** Public half of the stored deploy key — what to register on the git host. */
+  sshPublicKey?: string
+  /** `SHA256:…` fingerprint of `sshPublicKey`. */
+  sshKeyFingerprint?: string
+  /**
+   * Pinned known_hosts lines for the SSH host. Supplied by the user, or learned
+   * on the first successful sync (trust on first use) and checked strictly after.
+   */
+  sshKnownHosts?: string
   /** Git author/committer name for agent commits in this repo's worktrees. */
   commitAuthorName?: string
   /** Git author/committer email for agent commits in this repo's worktrees. */
@@ -475,10 +496,23 @@ export interface Repository {
  */
 export type RepositoryInput = Omit<
   Repository,
-  'id' | 'createdAt' | 'updatedAt' | 'syncStatus' | 'clonePath' | 'hasGithubKey'
+  | 'id'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'syncStatus'
+  | 'clonePath'
+  | 'hasGithubKey'
+  | 'hasGitlabToken'
+  | 'hasSshKey'
+  | 'sshPublicKey'
+  | 'sshKeyFingerprint'
 > & {
   /** Raw GitHub App private key PEM. Write-only. */
   githubPrivateKey?: string
+  /** Raw GitLab access token. Write-only; absent/empty leaves the stored token. */
+  gitlabToken?: string
+  /** Raw SSH private key. Write-only; absent/empty leaves the stored key. */
+  sshPrivateKey?: string
 }
 
 /** Payload for testing a repository connection before/without persisting it. */
@@ -489,8 +523,25 @@ export interface RepoTestConnectionInput {
   githubAppId?: string
   /** Raw PEM to test with. If omitted, falls back to the stored key for `repoId`. */
   githubPrivateKey?: string
-  /** Existing repo id — lets the test reuse the stored key when no new PEM is supplied. */
+  /** GitLab token to test with. If omitted, falls back to the stored token for `repoId`. */
+  gitlabToken?: string
+  /** SSH private key to test with. If omitted, falls back to the stored key for `repoId`. */
+  sshPrivateKey?: string
+  /** known_hosts to pin for the test. If omitted, uses the stored value for `repoId`. */
+  sshKnownHosts?: string
+  /** Existing repo id — lets the test reuse stored credentials when none are supplied. */
   repoId?: string
+}
+
+/** The public half of a deploy key — what the user registers on the git host. */
+export interface SshPublicKeyInfo {
+  publicKey: string
+  fingerprint: string
+}
+
+/** A freshly generated deploy key, handed to the form like an uploaded one. */
+export interface SshKeyPairResult extends SshPublicKeyInfo {
+  privateKey: string
 }
 
 export interface RepoSyncStatusPayload {
@@ -699,6 +750,9 @@ export interface ConduitAPI {
     delete: (id: string) => Promise<void>
     triggerSync: (id: string) => Promise<void>
     testConnection: (data: RepoTestConnectionInput) => Promise<{ success: boolean; message: string }>
+    generateSshKey: () => Promise<SshKeyPairResult>
+    /** Validate an uploaded private key and derive its public half. Nothing is stored. */
+    describeSshKey: (privateKey: string) => Promise<SshPublicKeyInfo>
   }
   onRepoSyncStatus: (cb: (payload: RepoSyncStatusPayload) => void) => () => void
   publishTargets: {

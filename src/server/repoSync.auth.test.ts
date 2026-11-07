@@ -13,6 +13,10 @@ vi.mock('../main/db/queries/repositories', () => ({
   listRepositories: vi.fn(),
   getRepository: vi.fn(),
   updateRepository: vi.fn(),
+  getRepositoryCredentials: vi.fn(),
+}))
+vi.mock('./crypto', () => ({
+  decryptSecret: (s: string) => s.replace(/^enc:/, ''),
 }))
 vi.mock('./githubApp', () => ({
   resolveRepoToken: vi.fn(),
@@ -29,7 +33,8 @@ import {
   repositoryUpdateNeedsSync,
 } from './repoSync'
 import { reporter } from './observability'
-import { getRepository, updateRepository } from '../main/db/queries/repositories'
+import { getRepository, getRepositoryCredentials, updateRepository } from '../main/db/queries/repositories'
+import { generateSshKeyPair } from './sshKey'
 import { resolveRepoToken } from './githubApp'
 import { cloneRepo, fetchRepo } from './gitOps'
 
@@ -103,6 +108,18 @@ describe('repositoryUpdateNeedsSync', () => {
       )
     ).toBe(true)
   })
+
+  it('requests sync when a new GitLab token or deploy key is supplied', () => {
+    expect(repositoryUpdateNeedsSync({ gitlabToken: 'glpat-1' }, STORED_APP_REPO)).toBe(true)
+    expect(repositoryUpdateNeedsSync({ sshPrivateKey: 'key' }, STORED_APP_REPO)).toBe(true)
+    expect(repositoryUpdateNeedsSync({ gitlabToken: '', sshPrivateKey: '' }, STORED_APP_REPO)).toBe(false)
+  })
+
+  it('requests sync only when the pinned known hosts actually change', () => {
+    const stored = { ...STORED_APP_REPO, authMethod: 'sshkey' as const, sshKnownHosts: 'h ssh-ed25519 AAAA' }
+    expect(repositoryUpdateNeedsSync({ sshKnownHosts: 'h ssh-ed25519 AAAA\n' }, stored)).toBe(false)
+    expect(repositoryUpdateNeedsSync({ sshKnownHosts: '' }, stored)).toBe(true)
+  })
 })
 
 describe('isRepoAuthenticationError', () => {
@@ -173,6 +190,84 @@ describe('RepoSyncService credential failures', () => {
     const [message, level] = vi.mocked(reporter.captureMessage).mock.calls[0]
     expect(message).toContain('No GitHub App token could be minted')
     expect(level).toBe('warning')
+  })
+
+  it('reports a GitLab repo with no stored token as an expected misconfiguration', async () => {
+    vi.mocked(getRepository).mockResolvedValue({ ...PAT_REPO, url: 'https://gitlab.com/g/p.git', authMethod: 'gitlab' })
+    vi.mocked(getRepositoryCredentials).mockResolvedValue({})
+
+    await new RepoSyncService(vi.fn()).syncRepo(PAT_REPO.id)
+
+    expect(reporter.captureException).not.toHaveBeenCalled()
+    const [message, level] = vi.mocked(reporter.captureMessage).mock.calls[0]
+    expect(message).toContain('No GitLab access token')
+    expect(level).toBe('warning')
+    expect(cloneRepo).not.toHaveBeenCalled()
+  })
+
+  it('clones a GitLab repo with its token under the oauth2 username', async () => {
+    vi.mocked(getRepository).mockResolvedValue({ ...PAT_REPO, url: 'https://gitlab.com/g/p.git', authMethod: 'gitlab' })
+    vi.mocked(getRepositoryCredentials).mockResolvedValue({ gitlabTokenEnc: 'enc:glpat-1' })
+
+    await new RepoSyncService(vi.fn()).syncRepo(PAT_REPO.id)
+
+    expect(cloneRepo).toHaveBeenCalledWith(
+      'https://gitlab.com/g/p.git',
+      PAT_REPO.clonePath,
+      'main',
+      expect.objectContaining({ token: 'glpat-1', tokenUsername: 'oauth2' })
+    )
+  })
+
+  it('clones with the deploy key and pins the host key learned on first contact', async () => {
+    const sshRepo = { ...PAT_REPO, url: 'git@gitlab.com:g/p.git', authMethod: 'sshkey' as const }
+    vi.mocked(getRepository).mockResolvedValue(sshRepo)
+    vi.mocked(getRepositoryCredentials).mockResolvedValue({ sshPrivateKeyEnc: `enc:${generateSshKeyPair().privateKey}` })
+    let sshCommand = ''
+    vi.mocked(cloneRepo).mockImplementationOnce(async (_url, _path, _branch, auth) => {
+      sshCommand = (auth as { env: Record<string, string> }).env.GIT_SSH_COMMAND
+      const knownHosts = /UserKnownHostsFile='([^']+)'/.exec(sshCommand)![1]
+      fs.appendFileSync(knownHosts, 'gitlab.com ssh-ed25519 AAAAhostkey\n')
+    })
+
+    await new RepoSyncService(vi.fn()).syncRepo(PAT_REPO.id)
+
+    expect(sshCommand).toContain('StrictHostKeyChecking=accept-new')
+    expect(updateRepository).toHaveBeenCalledWith(PAT_REPO.id, { sshKnownHosts: 'gitlab.com ssh-ed25519 AAAAhostkey' })
+    expect(updateRepository).toHaveBeenCalledWith(PAT_REPO.id, expect.objectContaining({ syncStatus: 'ready' }))
+    // The key file only exists for the duration of the git operation.
+    expect(fs.existsSync(/-i '([^']+)'/.exec(sshCommand)![1])).toBe(false)
+  })
+
+  it('checks a pinned host key strictly and does not re-pin it', async () => {
+    const sshRepo = { ...PAT_REPO, url: 'git@gitlab.com:g/p.git', authMethod: 'sshkey' as const }
+    vi.mocked(getRepository).mockResolvedValue(sshRepo)
+    vi.mocked(getRepositoryCredentials).mockResolvedValue({
+      sshPrivateKeyEnc: `enc:${generateSshKeyPair().privateKey}`,
+      sshKnownHosts: 'gitlab.com ssh-ed25519 AAAApinned',
+    })
+    let sshCommand = ''
+    vi.mocked(cloneRepo).mockImplementationOnce(async (_url, _path, _branch, auth) => {
+      sshCommand = (auth as { env: Record<string, string> }).env.GIT_SSH_COMMAND
+    })
+
+    await new RepoSyncService(vi.fn()).syncRepo(PAT_REPO.id)
+
+    expect(sshCommand).toContain('StrictHostKeyChecking=yes')
+    expect(updateRepository).not.toHaveBeenCalledWith(PAT_REPO.id, expect.objectContaining({ sshKnownHosts: expect.anything() }))
+  })
+
+  it('treats a rejected deploy key as a terminal auth failure with a fix', async () => {
+    vi.mocked(getRepository).mockResolvedValue({ ...PAT_REPO, url: 'git@gitlab.com:g/p.git', authMethod: 'sshkey' })
+    vi.mocked(getRepositoryCredentials).mockResolvedValue({ sshPrivateKeyEnc: `enc:${generateSshKeyPair().privateKey}` })
+    vi.mocked(cloneRepo).mockRejectedValueOnce(new Error('git clone failed (exit 128): git@gitlab.com: Permission denied (publickey).'))
+
+    await new RepoSyncService(vi.fn()).syncRepo(PAT_REPO.id)
+
+    expect(updateRepository).toHaveBeenCalledWith(PAT_REPO.id, {
+      syncStatus: 'error',
+      syncError: expect.stringMatching(/^Repository authentication failed\..*deploy key/),
+    })
   })
 
   it('still reports a thrown credential-resolution error as an exception', async () => {
@@ -342,7 +437,7 @@ describe('RepoSyncService credential failures', () => {
       clonePath,
       PAT_REPO.url,
       PAT_REPO.defaultBranch,
-      'ghs_token'
+      expect.objectContaining({ token: 'ghs_token' })
     )
   })
 
@@ -397,7 +492,7 @@ describe('RepoSyncService credential failures', () => {
       'https://github.com/acme/other.git',
       PAT_REPO.clonePath,
       PAT_REPO.defaultBranch,
-      'ghs_token'
+      expect.objectContaining({ token: 'ghs_token' })
     )
     expect(trigger1Settled).toBe(false)
     expect(trigger2Settled).toBe(false)
@@ -442,7 +537,7 @@ describe('RepoSyncService credential failures', () => {
       'https://github.com/acme/other.git',
       PAT_REPO.clonePath,
       PAT_REPO.defaultBranch,
-      'ghs_token'
+      expect.objectContaining({ token: 'ghs_token' })
     )
     expect(resolveRepoToken.mock.calls[1][0].url).toBe('https://github.com/acme/other.git')
     expect(triggerSettled).toBe(false)

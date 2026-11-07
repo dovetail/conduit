@@ -12,6 +12,8 @@ import type {
   Repository,
   RepositoryInput,
   RepoTestConnectionInput,
+  SshKeyPairResult,
+  SshPublicKeyInfo,
   Trigger,
   TriggerFiredPayload,
   McpOAuthStatus,
@@ -245,6 +247,8 @@ export function createWsConduitClient(wsUrl: string): ConduitAPI {
       triggerSync: (id: string) => invoke<void>('repos:triggerSync', id),
       testConnection: (data: RepoTestConnectionInput) =>
         invoke<{ success: boolean; message: string }>('repos:testConnection', data),
+      generateSshKey: () => invoke<SshKeyPairResult>('repos:generateSshKey'),
+      describeSshKey: (privateKey: string) => invoke<SshPublicKeyInfo>('repos:describeSshKey', privateKey),
     },
 
     runners: {

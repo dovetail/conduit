@@ -224,6 +224,10 @@ export async function initDb(): Promise<void> {
       owner_id TEXT,
       github_app_id TEXT,
       github_private_key_enc TEXT,
+      gitlab_token_enc TEXT,
+      ssh_private_key_enc TEXT,
+      ssh_public_key TEXT,
+      ssh_known_hosts TEXT,
       commit_author_name TEXT,
       commit_author_email TEXT,
       created_at BIGINT NOT NULL,
@@ -245,6 +249,10 @@ export async function initDb(): Promise<void> {
     ALTER TABLE repositories ADD COLUMN IF NOT EXISTS owner_id TEXT;
     ALTER TABLE repositories ADD COLUMN IF NOT EXISTS github_app_id TEXT;
     ALTER TABLE repositories ADD COLUMN IF NOT EXISTS github_private_key_enc TEXT;
+    ALTER TABLE repositories ADD COLUMN IF NOT EXISTS gitlab_token_enc TEXT;
+    ALTER TABLE repositories ADD COLUMN IF NOT EXISTS ssh_private_key_enc TEXT;
+    ALTER TABLE repositories ADD COLUMN IF NOT EXISTS ssh_public_key TEXT;
+    ALTER TABLE repositories ADD COLUMN IF NOT EXISTS ssh_known_hosts TEXT;
     ALTER TABLE repositories ADD COLUMN IF NOT EXISTS commit_author_name TEXT;
     ALTER TABLE repositories ADD COLUMN IF NOT EXISTS commit_author_email TEXT;
     ALTER TABLE runs ADD COLUMN IF NOT EXISTS started_by TEXT;

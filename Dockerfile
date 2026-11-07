@@ -50,7 +50,8 @@ FROM node:24-slim
 
 WORKDIR /app
 
-# git is required at runtime for repository sync (clone/fetch/worktree); curl
+# git is required at runtime for repository sync (clone/fetch/worktree), and
+# openssh-client for SSH clone URLs (deploy-key and server-SSH repos); curl
 # is needed to fetch the Cursor CLI installer below. git-lfs is required for
 # repos that store assets in git-LFS (e.g. a Yarn zero-install `.yarn/cache`):
 # without it, worktree checkouts contain LFS *pointer* files instead of content,
@@ -65,7 +66,7 @@ WORKDIR /app
 # .tar.xz release archives, and python3 + make + g++ so node-gyp can build
 # native modules (e.g. sharp) during a repo's `yarn install`.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends git git-lfs ca-certificates curl \
+    apt-get install -y --no-install-recommends git git-lfs openssh-client ca-certificates curl \
       jq xz-utils python3 make g++ && \
     git lfs install --system && \
     rm -rf /var/lib/apt/lists/*
@@ -98,6 +99,17 @@ RUN mkdir -p -m 755 /etc/apt/keyrings && \
     rm -rf /var/lib/apt/lists/* && \
     # Fail the build loudly if `gh` ever fails to land on PATH.
     gh --version
+
+# GitLab CLI (`glab`), the GitLab counterpart of `gh`: for GitLab-token repos the
+# runner injects GITLAB_TOKEN (+ GITLAB_HOST for self-managed instances) so
+# `glab mr create` / `glab api` authenticate as the same identity `git push`
+# uses. Pinned release .deb from GitLab's package registry.
+ARG GLAB_VERSION=1.128.0
+RUN arch="$(dpkg --print-architecture)" && \
+    curl -fsSL -o /tmp/glab.deb \
+      "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_${arch}.deb" && \
+    dpkg -i /tmp/glab.deb && rm /tmp/glab.deb && \
+    glab --version
 
 # Front the real gh so it reads the run's refreshed token (see the script).
 COPY --chmod=755 scripts/gh-token-shim.sh /usr/local/bin/gh

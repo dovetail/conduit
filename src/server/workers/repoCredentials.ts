@@ -6,6 +6,11 @@ import { buildAuthUrl, runGit } from '../gitOps'
 /**
  * Keeps a run's GitHub credential current for its whole lifetime.
  *
+ * The `origin` rewrite is host-neutral (it honors the repo's `tokenUsername`,
+ * so a GitLab token's `oauth2` user survives a re-point), but only GitHub App
+ * tokens are ever refreshed; static GitLab tokens are set once, and `glab`
+ * reads `GITLAB_TOKEN` from the env (see `repoCliEnvEntries`).
+ *
  * A GitHub App installation token lives about an hour, but agent runs can go
  * much longer, and the token is baked into two places the agent reads: the
  * checkout's `origin` URL (`git push`) and the `GH_TOKEN` env var (`gh`). The
@@ -56,7 +61,7 @@ function writeFileAtomic(filePath: string, content: string, mode: number): void 
 export function installRepoCredentials(opts: {
   runId: string
   workspacePath: string
-  repo: { url: string; token?: string }
+  repo: { url: string; token?: string; tokenUsername?: string }
   env: NodeJS.ProcessEnv
 }): RepoCredentials | undefined {
   const { runId, workspacePath, repo, env } = opts
@@ -91,8 +96,10 @@ export function installRepoCredentials(opts: {
       if (token === current) return
       writeFileAtomic(tokenPath, token, 0o600)
       const origin = (await runGit(['remote', 'get-url', 'origin'], { cwd: workspacePath }).catch(() => '')).trim()
-      if (origin === buildAuthUrl(repo.url, current)) {
-        await runGit(['remote', 'set-url', 'origin', buildAuthUrl(repo.url, token)], { cwd: workspacePath })
+      if (origin === buildAuthUrl(repo.url, current, repo.tokenUsername)) {
+        await runGit(['remote', 'set-url', 'origin', buildAuthUrl(repo.url, token, repo.tokenUsername)], {
+          cwd: workspacePath,
+        })
       }
       current = token
     },
