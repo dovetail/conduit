@@ -135,6 +135,26 @@ describe('parseCursorEvents', () => {
     expect(events[0].isError).toBe(false)
   })
 
+  it('attaches the token usage the result event reports', () => {
+    const events = parseCursorEvents(
+      line({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        duration_ms: 4200,
+        usage: { inputTokens: 5, outputTokens: 7 },
+      })
+    )
+    expect(events).toEqual([
+      {
+        kind: 'result',
+        isError: false,
+        text: 'Completed',
+        usage: { inputTokens: 5, outputTokens: 7, cliDurationMs: 4200 },
+      },
+    ])
+  })
+
   it('parses the terminal result marker', () => {
     expect(parseCursorEvents(line({ type: 'result', subtype: 'success', is_error: false }))).toEqual([
       { kind: 'result', isError: false, text: 'Completed' },

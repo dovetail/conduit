@@ -75,6 +75,9 @@ interface WindowStats {
   byStatus: Partial<Record<RunStatus, number>>
   successRate?: number
   avgDurationMs?: number
+  /** Sum / mean over runs whose CLI reported a cost; unset if none did. */
+  totalCostUsd?: number
+  avgCostUsd?: number
   sampleFailedRunIds: string[]
 }
 
@@ -82,11 +85,17 @@ function statsFor(runs: ExecutionRun[]): WindowStats {
   const byStatus: Partial<Record<RunStatus, number>> = {}
   let durationTotal = 0
   let durationCount = 0
+  let costTotal = 0
+  let costCount = 0
   for (const run of runs) {
     byStatus[run.status] = (byStatus[run.status] ?? 0) + 1
     if (run.durationMs != null) {
       durationTotal += run.durationMs
       durationCount++
+    }
+    if (run.usage?.costUsd != null) {
+      costTotal += run.usage.costUsd
+      costCount++
     }
   }
   const finished = (byStatus.completed ?? 0) + (byStatus.failed ?? 0)
@@ -95,6 +104,8 @@ function statsFor(runs: ExecutionRun[]): WindowStats {
     byStatus,
     successRate: finished > 0 ? Number(((byStatus.completed ?? 0) / finished).toFixed(3)) : undefined,
     avgDurationMs: durationCount > 0 ? Math.round(durationTotal / durationCount) : undefined,
+    totalCostUsd: costCount > 0 ? Number(costTotal.toFixed(4)) : undefined,
+    avgCostUsd: costCount > 0 ? Number((costTotal / costCount).toFixed(4)) : undefined,
     sampleFailedRunIds: runs.filter((r) => r.status === 'failed').slice(0, 5).map((r) => r.id),
   }
 }

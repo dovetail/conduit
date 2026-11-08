@@ -18,6 +18,7 @@ import {
   resolveFargateTaskSize,
   isAllowlistedE2eModule,
   resolveFargateConfig,
+  describeStoppedContainers,
   stopWaitVerdict,
   tryLoadE2eFakeEcsClient,
   type FargateWorkerConfig,
@@ -843,6 +844,26 @@ describe('buildFargateEcsClientConfig', () => {
   })
 })
 
+describe('describeStoppedContainers', () => {
+  it('reports exit code and reason per container, and the stop code', () => {
+    expect(
+      describeStoppedContainers({
+        containers: [
+          { name: 'worker', exitCode: 1 },
+          { name: 'sidecar', reason: 'CannotPullContainerError' },
+          { name: 'idle' },
+        ],
+        stopCode: 'TaskFailedToStart',
+      })
+    ).toBe('container worker exited 1; container sidecar CannotPullContainerError; stop code TaskFailedToStart')
+  })
+
+  it('is empty when ECS recorded nothing', () => {
+    expect(describeStoppedContainers(undefined)).toBe('')
+    expect(describeStoppedContainers({ containers: [{ name: 'worker' }] })).toBe('')
+  })
+})
+
 describe('FargateWorkerFactory', () => {
   let ecs: FakeEcs
   let cp: ReturnType<typeof fakeControlPlane>
@@ -1118,6 +1139,25 @@ describe('FargateWorkerFactory', () => {
     expect(cp.cancelAssignTo).toHaveBeenCalledWith(
       'fargate-run-1',
       expect.objectContaining({ message: expect.stringMatching(/CannotPullContainerError|STOPPED|image not found/) })
+    )
+  })
+
+  it('names the container exit code when the task stops before the worker connects', async () => {
+    ecs.describeResponse = {
+      tasks: [
+        {
+          taskArn: TASK_ARN,
+          lastStatus: 'STOPPED',
+          stoppedReason: 'Essential container in task exited',
+          stopCode: 'EssentialContainerExited',
+          containers: [{ name: 'worker', exitCode: 137, reason: 'OutOfMemoryError: Container killed' }],
+        },
+      ],
+    }
+    cp.assignTo.mockImplementation(() => new Promise(() => {}))
+    await expect(factory.startRun(SPEC, sink)).rejects.toThrow(
+      'stopped before the worker connected: Essential container in task exited ' +
+        '(container worker exited 137: OutOfMemoryError: Container killed; stop code EssentialContainerExited)'
     )
   })
 

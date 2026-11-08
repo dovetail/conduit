@@ -21,6 +21,9 @@
 # GIT_SHA / Sentry release: the image is tagged and released as $BUILDKITE_COMMIT
 # (passed as the GIT_SHA build arg → baked into the image → Sentry release at
 # runtime), so uploaded source maps line up with the events they explain.
+# The same arg is the cache boundary for the agent CLI install in the
+# Dockerfile: each commit refetches the latest Claude Code, Amp, and Cursor
+# agent instead of replaying a frozen layer from the registry build cache.
 
 env:
   AWS_REGION: "us-east-1"

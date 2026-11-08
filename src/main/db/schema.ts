@@ -258,4 +258,5 @@ export const runs = pgTable('runs', {
   lastLine: text('last_line'),
   workerKind: text('worker_kind'),
   workerId: text('worker_id'),
+  usage: text('usage'),
 })

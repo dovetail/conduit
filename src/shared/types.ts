@@ -267,6 +267,30 @@ export interface AgentConfig {
   updatedAt: number
 }
 
+/**
+ * Metering data a coding CLI reports about a run. Every field is optional: each
+ * CLI reports a different subset (Claude Code includes `costUsd`; Cursor and Amp
+ * generally report tokens and timing only), and fields the CLI did not report
+ * stay unset rather than being estimated. `costUsd` is the CLI's own figure —
+ * for subscription-backed accounts it is an API-equivalent estimate, not a bill.
+ */
+export interface RunUsage {
+  /** Cost in USD as reported by the CLI. */
+  costUsd?: number
+  inputTokens?: number
+  outputTokens?: number
+  /** Tokens served from the prompt cache. */
+  cacheReadTokens?: number
+  /** Tokens written to the prompt cache. */
+  cacheWriteTokens?: number
+  /** Agent turns the CLI reports having taken. */
+  numTurns?: number
+  /** The CLI's own wall-clock session duration (excludes Conduit workspace setup). */
+  cliDurationMs?: number
+  /** Time the CLI spent waiting on model API calls. */
+  apiDurationMs?: number
+}
+
 export interface ExecutionRun {
   id: string
   agentId: string
@@ -285,6 +309,8 @@ export interface ExecutionRun {
   workerKind?: string
   /** Control-plane identity of the worker that ran it (remote factories only). */
   workerId?: string
+  /** Metering reported by the CLI at the end of the run; unset if it reported none. */
+  usage?: RunUsage
 }
 
 export interface LogEntry {
@@ -305,6 +331,7 @@ export interface RunStatusChangePayload {
   exitCode?: number
   endedAt?: number
   durationMs?: number
+  usage?: RunUsage
 }
 
 // ── Structured run events ────────────────────────────────────────────────────
@@ -317,9 +344,12 @@ export interface RunStatusChangePayload {
  *  - `tool_use`     — a tool call (linked to its result by `toolUseId`)
  *  - `tool_result`  — the output of a tool call (the collapsed-by-default detail)
  *  - `result`       — the run's terminal success/failure marker from the CLI
+ *                     (carries `usage` when the CLI reports it)
+ *  - `metering`     — Conduit's end-of-run summary: wall-clock `durationMs` plus
+ *                     the CLI-reported `usage`
  *  - `raw`          — unparsed stdout, stderr, or a system message
  */
-export type RunEventKind = 'assistant' | 'tool_use' | 'tool_result' | 'result' | 'raw'
+export type RunEventKind = 'assistant' | 'tool_use' | 'tool_result' | 'result' | 'metering' | 'raw'
 
 export interface RunEvent {
   /** Unix ms when the event was recorded (stamped by the runner). */
@@ -339,6 +369,12 @@ export interface RunEvent {
   isError?: boolean
   /** Origin for `raw` events. */
   stream?: 'stdout' | 'stderr' | 'system'
+  /** Metering the CLI reported — on `result` and `metering` events. */
+  usage?: RunUsage
+  /** Conduit's wall-clock run duration — on `metering` events. */
+  durationMs?: number
+  /** Which CLI ran — on `metering` events. */
+  runner?: RunnerType
 }
 
 /** A parsed event before the runner stamps its timestamp. */

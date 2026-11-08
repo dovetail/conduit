@@ -149,6 +149,9 @@ export function runLogToText(events: RunEvent[]): string {
       case 'result':
         lines.push(e.isError ? '✗ Failed' : '✓ Completed')
         break
+      case 'metering':
+        if (e.text?.trim()) lines.push(e.text.trim())
+        break
       // tool_result rows are consumed via the toolUseId map above.
     }
   }

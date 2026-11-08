@@ -1,8 +1,9 @@
 import * as fs from 'fs'
 import * as path from 'path'
-import type { ExecutionRun, RunEvent, TriggerContext, RunnerType, Repository } from '../shared/types'
+import type { ExecutionRun, RunEvent, RunUsage, TriggerContext, RunnerType, Repository } from '../shared/types'
 import type { RunSpec, WorkspaceSpec, WorkerEventSink, WorkerHandle } from '../shared/worker'
 import { summarizeEvent } from '../shared/runEvents'
+import { formatRunMetering } from '../shared/usage'
 import { createRun, updateRun, updateRunIfRunning, getRunningRunForAgent } from '../main/db/queries/runs'
 import { getAgent } from '../main/db/queries/agents'
 import { getRepository } from '../main/db/queries/repositories'
@@ -248,6 +249,7 @@ export function createRunOrchestration(opts: {
   }
   let logCapped = RUN_LOG_MAX_BYTES > 0 && logBytesWritten >= RUN_LOG_MAX_BYTES
   let lastLine = run.lastLine ?? ''
+  let usage: RunUsage | undefined = run.usage
 
   const eventBuffer: RunEvent[] = []
   let flushScheduled = false
@@ -292,6 +294,18 @@ export function createRunOrchestration(opts: {
     persist: persistRunEvent,
     forward: forwardRunEvent,
     live: (event) => {
+      if (event.kind === 'result' && event.usage) {
+        usage = event.usage
+        // Persist as soon as the CLI reports it, so a server restart between the
+        // result event and the exit frame does not lose the run's metering.
+        void (async () => {
+          try {
+            await updateRun(runId, { usage })
+          } catch (err) {
+            console.error(`[server/runner] Failed to persist usage for run ${runId}:`, err)
+          }
+        })()
+      }
       const summary = summarizeEvent(event)
       if (summary) lastLine = summary.slice(0, 500)
       eventBuffer.push(event)
@@ -337,6 +351,7 @@ export function createRunOrchestration(opts: {
         durationMs,
         exitCode: exitCode ?? undefined,
         lastLine: lastLine || undefined,
+        usage,
       })
     } catch (err) {
       finalized = false
@@ -349,6 +364,19 @@ export function createRunOrchestration(opts: {
 
     activeProcesses.delete(runId)
     runFinalizers()
+
+    // Metering summary: goes through the normal event path so it lands in the
+    // run's log, the process log (stdout), and the live broadcast as one
+    // structured event that log shippers and API clients can read.
+    if (finalRun) {
+      eventHandlers.onEvent({
+        kind: 'metering',
+        runner,
+        durationMs,
+        usage,
+        text: `[Conduit metering] ${formatRunMetering(durationMs, usage)} (${status})`,
+      })
+    }
 
     if (eventBuffer.length > 0) {
       const events = eventBuffer.splice(0)
@@ -369,6 +397,7 @@ export function createRunOrchestration(opts: {
           exitCode: exitCode ?? undefined,
           endedAt,
           durationMs,
+          usage,
         })
         const outcomes = (await publishRunResult(agentId, finalRun)) ?? []
         for (const outcome of outcomes) {

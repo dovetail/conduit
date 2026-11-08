@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { cn } from '@renderer/lib/utils'
 import { formatDuration, formatRelativeTime } from '@renderer/lib/utils'
+import { formatCostUsd, formatRunMetering } from '@shared/usage'
 import { StatusBadge } from '@renderer/components/ui/badge'
 import { useRuns, useLiveActivity } from '@renderer/hooks/useRuns'
 import type { ExecutionRun } from '@shared/types'
@@ -65,6 +66,14 @@ function RunRow({ run, index, isSelected, onClick }: RunRowProps) {
           </span>
         )}
       </div>
+      {run.usage?.costUsd !== undefined && (
+        <span
+          className="text-xs text-[var(--text-secondary)] font-mono tabular-nums flex-shrink-0"
+          title={formatRunMetering(run.durationMs ?? 0, run.usage)}
+        >
+          {formatCostUsd(run.usage.costUsd)}
+        </span>
+      )}
       <span className="text-xs text-[var(--text-secondary)] font-mono tabular-nums flex-shrink-0">
         {isRunning ? formatDuration(elapsed ?? undefined) : formatDuration(run.durationMs)}
       </span>

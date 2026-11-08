@@ -14,6 +14,7 @@ export function buildAmpArgs(mcpConfigPath: string): string[] {
 
 import type { RunEventInit } from '../../../shared/types'
 import { capText } from '../../../shared/runEvents'
+import { parseRunUsage } from '../../../shared/usage'
 
 interface AmpStreamEvent {
   type: string
@@ -137,7 +138,7 @@ export function parseAmpEvents(line: string): RunEventInit[] {
 
     case 'result': {
       const ok = event.subtype === 'success' || event.result === 'success'
-      events.push({ kind: 'result', isError: !ok, text: ok ? 'Completed' : 'Failed' })
+      events.push({ kind: 'result', isError: !ok, text: ok ? 'Completed' : 'Failed', usage: parseRunUsage(event) })
       break
     }
 
