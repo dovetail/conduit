@@ -6,19 +6,49 @@ import { repositories, agents } from '../schema'
 import { REPOS_DIR } from '../../utils/paths'
 import { getVisibleEntityIds } from './access'
 import { deleteSharesForEntity } from './shares'
+import { sshKeyFingerprint } from '../../utils/sshFingerprint'
 import type { Repository } from '../../../shared/types'
 
 /**
  * Repository write payload at the persistence layer. Unlike the client-facing
- * `RepositoryInput`, the GitHub App key arrives here already encrypted
- * (`githubPrivateKeyEnc`) — encryption happens at the server handler boundary.
+ * `RepositoryInput`, secrets arrive here already encrypted (`*Enc`) —
+ * encryption happens at the server handler boundary.
  */
 export type RepoWriteData = Omit<
   Repository,
-  'id' | 'createdAt' | 'updatedAt' | 'syncStatus' | 'clonePath' | 'hasGithubKey'
+  | 'id'
+  | 'createdAt'
+  | 'updatedAt'
+  | 'syncStatus'
+  | 'clonePath'
+  | 'hasGithubKey'
+  | 'hasGitlabToken'
+  | 'hasSshKey'
+  | 'sshKeyFingerprint'
 > & {
   /** AES-256-GCM-encrypted GitHub App private key blob. */
   githubPrivateKeyEnc?: string
+  /** AES-256-GCM-encrypted GitLab access token. */
+  gitlabTokenEnc?: string
+  /** AES-256-GCM-encrypted SSH private key. Written together with `sshPublicKey`. */
+  sshPrivateKeyEnc?: string
+}
+
+export interface RepositoryCredentials {
+  githubAppId?: string
+  githubPrivateKeyEnc?: string
+  gitlabTokenEnc?: string
+  sshPrivateKeyEnc?: string
+  sshKnownHosts?: string
+}
+
+function fingerprintOrUndefined(publicKey: string | null): string | undefined {
+  if (!publicKey) return undefined
+  try {
+    return sshKeyFingerprint(publicKey)
+  } catch {
+    return undefined
+  }
 }
 
 function rowToRepository(row: typeof repositories.$inferSelect): Repository {
@@ -36,6 +66,11 @@ function rowToRepository(row: typeof repositories.$inferSelect): Repository {
     githubAppId: row.githubAppId ?? undefined,
     // Never expose the encrypted key — surface only whether one is stored.
     hasGithubKey: !!row.githubPrivateKeyEnc,
+    hasGitlabToken: !!row.gitlabTokenEnc,
+    hasSshKey: !!row.sshPrivateKeyEnc,
+    sshPublicKey: row.sshPublicKey ?? undefined,
+    sshKeyFingerprint: fingerprintOrUndefined(row.sshPublicKey),
+    sshKnownHosts: row.sshKnownHosts ?? undefined,
     commitAuthorName: row.commitAuthorName ?? undefined,
     commitAuthorEmail: row.commitAuthorEmail ?? undefined,
     createdAt: row.createdAt,
@@ -44,18 +79,18 @@ function rowToRepository(row: typeof repositories.$inferSelect): Repository {
 }
 
 /**
- * Server-only accessor for a repo's GitHub App credentials, including the
- * encrypted private key. Used for minting installation tokens — never returned
- * over the wire to clients.
+ * Server-only accessor for a repo's stored credentials, still encrypted. Used
+ * to mint/inject git credentials — never returned over the wire to clients.
  */
-export async function getRepositoryCredentials(
-  id: string
-): Promise<{ githubAppId?: string; githubPrivateKeyEnc?: string } | null> {
+export async function getRepositoryCredentials(id: string): Promise<RepositoryCredentials | null> {
   const rows = await getDb().select().from(repositories).where(eq(repositories.id, id))
   if (rows.length === 0) return null
   return {
     githubAppId: rows[0].githubAppId ?? undefined,
     githubPrivateKeyEnc: rows[0].githubPrivateKeyEnc ?? undefined,
+    gitlabTokenEnc: rows[0].gitlabTokenEnc ?? undefined,
+    sshPrivateKeyEnc: rows[0].sshPrivateKeyEnc ?? undefined,
+    sshKnownHosts: rows[0].sshKnownHosts ?? undefined,
   }
 }
 
@@ -102,6 +137,10 @@ export async function createRepository(
     ownerId,
     githubAppId: data.githubAppId ?? null,
     githubPrivateKeyEnc: data.githubPrivateKeyEnc ?? null,
+    gitlabTokenEnc: data.gitlabTokenEnc ?? null,
+    sshPrivateKeyEnc: data.sshPrivateKeyEnc ?? null,
+    sshPublicKey: data.sshPublicKey ?? null,
+    sshKnownHosts: data.sshKnownHosts?.trim() || null,
     commitAuthorName: data.commitAuthorName ?? null,
     commitAuthorEmail: data.commitAuthorEmail ?? null,
     createdAt: now,
@@ -140,12 +179,55 @@ export async function updateRepository(
       updateValues.githubAppId = null
       updateValues.githubPrivateKeyEnc = null
     }
+    if (data.authMethod !== 'gitlab') updateValues.gitlabTokenEnc = null
+    if (data.authMethod !== 'sshkey') {
+      updateValues.sshPrivateKeyEnc = null
+      updateValues.sshPublicKey = null
+      updateValues.sshKnownHosts = null
+    }
   }
-  if (data.githubAppId !== undefined) updateValues.githubAppId = data.githubAppId || null
-  // Only overwrite the stored key when a new (encrypted) one is supplied — an
-  // absent githubPrivateKeyEnc leaves the existing key untouched.
-  if (data.githubPrivateKeyEnc !== undefined) {
-    updateValues.githubPrivateKeyEnc = data.githubPrivateKeyEnc
+  // Secrets and known_hosts are only written for the method that will apply
+  // after this update. When the patch omits authMethod, look up the stored one
+  // so a gitlabTokenEnc can't land on a pat repo (and the same for ssh / App).
+  const needsStoredMethod =
+    data.authMethod === undefined &&
+    (data.githubPrivateKeyEnc !== undefined ||
+      data.githubAppId !== undefined ||
+      data.gitlabTokenEnc !== undefined ||
+      data.sshPrivateKeyEnc !== undefined ||
+      'sshKnownHosts' in data ||
+      data.url !== undefined)
+  const existing =
+    needsStoredMethod || data.url !== undefined || 'sshKnownHosts' in data
+      ? await getRepository(id)
+      : null
+  const method = data.authMethod ?? existing?.authMethod
+
+  if (method === 'githubapp') {
+    if (data.githubAppId !== undefined) updateValues.githubAppId = data.githubAppId || null
+    // Only overwrite the stored key when a new (encrypted) one is supplied —
+    // an absent githubPrivateKeyEnc leaves the existing key untouched.
+    if (data.githubPrivateKeyEnc !== undefined) {
+      updateValues.githubPrivateKeyEnc = data.githubPrivateKeyEnc
+    }
+  }
+  if (method === 'gitlab' && data.gitlabTokenEnc !== undefined) {
+    updateValues.gitlabTokenEnc = data.gitlabTokenEnc
+  }
+  if (method === 'sshkey') {
+    if (data.sshPrivateKeyEnc !== undefined) {
+      updateValues.sshPrivateKeyEnc = data.sshPrivateKeyEnc
+      updateValues.sshPublicKey = data.sshPublicKey ?? null
+    }
+    const urlChanged = !!existing && data.url !== undefined && data.url !== existing.url
+    const knownHosts = 'sshKnownHosts' in data ? data.sshKnownHosts?.trim() || undefined : existing?.sshKnownHosts
+    // A pinned host key belongs to the old URL's host: unless a different one
+    // was supplied with the new URL, drop it so the new host is learned afresh.
+    if (urlChanged && knownHosts === existing?.sshKnownHosts) {
+      updateValues.sshKnownHosts = null
+    } else if ('sshKnownHosts' in data) {
+      updateValues.sshKnownHosts = knownHosts ?? null
+    }
   }
 
   await getDb().update(repositories).set(updateValues).where(eq(repositories.id, id))

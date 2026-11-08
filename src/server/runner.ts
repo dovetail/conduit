@@ -23,7 +23,8 @@ import { DEV_USER_ID } from './auth/config'
 import { LOGS_DIR } from '../main/utils/paths'
 import { removeWorktree } from './gitOps'
 import { buildRunFailureReport, failedStartLastLine, isDerivedWorkerControlFailure } from './runFailure'
-import { resolvePushCredential, githubTokenEnvEntry } from './githubApp'
+import { resolvePushCredential } from './githubApp'
+import { repoCliEnvEntries, resolveRepoAuthSafe } from './repoAuth'
 import { publishRunResult } from './publisher'
 import { buildTriggeredPrompt } from './triggers/promptBuilder'
 import { createRunEventHandlers } from './runEventSink'
@@ -63,15 +64,16 @@ const RUNNER_ENV_VAR: Record<string, string> = {
 async function buildRunnerEnvOverlay(
   agent: { runner: string; envVars?: Record<string, string>; ownerId?: string; bgTaskTimeoutSeconds?: number },
   startedBy?: string,
-  githubToken?: string
+  repoCli?: { authMethod: Repository['authMethod']; url: string; token?: string }
 ): Promise<Record<string, string>> {
   const env: Record<string, string> = { ...(agent.envVars ?? {}) }
   const ownerId = startedBy || agent.ownerId || DEV_USER_ID
 
-  // Expose the repo's git credential as GH_TOKEN so the `gh` CLI authenticates as
-  // the same identity `git push` uses. Only set when a token resolved (pat/
-  // githubapp repos); ssh/none and repo-less runs leave `gh` unauthenticated.
-  Object.assign(env, githubTokenEnvEntry(githubToken, agent.envVars))
+  // Expose the repo's git credential to the host's CLI (GH_TOKEN for `gh`,
+  // GITLAB_TOKEN/GITLAB_HOST for `glab`) so it authenticates as the same
+  // identity `git push` uses. Only set when a token resolved; ssh/sshkey/none
+  // and repo-less runs leave the CLIs unauthenticated.
+  if (repoCli) Object.assign(env, repoCliEnvEntries(repoCli.authMethod, repoCli.url, repoCli.token, agent.envVars))
 
   const envVar = RUNNER_ENV_VAR[agent.runner]
   if (envVar && !(agent.envVars && envVar in agent.envVars)) {
@@ -579,10 +581,11 @@ export async function startRunServer(
   // Set when push-credential resolution failed; surfaced into the run log once
   // the log stream is open (see below), so a broken git token is never invisible.
   let pushCredentialError: string | undefined
-  // The resolved repo credential (global PAT / minted GitHub-App installation
-  // token). Tokenizes the checkout's `origin` for `git push` AND is handed to
-  // the agent as GH_TOKEN so the `gh` CLI authenticates as the same identity.
+  // The resolved repo token (global PAT / minted GitHub-App installation token /
+  // GitLab access token). Tokenizes the checkout's `origin` for `git push` AND
+  // is handed to the host CLI (gh/glab) so it authenticates as the same identity.
   let pushToken: string | undefined
+  let repoCli: { authMethod: Repository['authMethod']; url: string; token?: string } | undefined
   // Set for GitHub App repos, whose installation tokens expire mid-run.
   let refreshableRepo: Pick<Repository, 'id' | 'url' | 'authMethod'> | undefined
 
@@ -598,17 +601,26 @@ export async function startRunServer(
         (repo.syncError ? ` Error: ${repo.syncError}` : ' Please wait for sync to complete.')
       )
     }
+    if (repo.authMethod === 'sshkey' && !repo.sshKnownHosts?.trim()) {
+      // The host key is pinned by the first successful server-side sync. A
+      // remote worker cloning before then would trust whatever host answers,
+      // and couldn't record what it saw.
+      throw new Error(
+        `Repository "${repo.name}" has no pinned SSH host key yet. Sync it successfully (or set Known Hosts) before running agents.`
+      )
+    }
     // Resolve push credentials (non-throwing) so the token can travel in the
     // RunSpec for the worker to inject into the checkout's origin. A failed
     // mint is recorded, not fatal — the agent's later `git push` fails with an
     // opaque credential error otherwise, so record why in both Sentry and the
     // run log (the run-log line is emitted below, once the log stream is open).
-    const { token: resolvedToken, error: pushTokenError } = await resolvePushCredential(repo)
-    pushToken = resolvedToken
+    const { auth: repoAuth, error: pushTokenError } = await resolveRepoAuthSafe(repo)
+    pushToken = repoAuth.token
+    repoCli = { authMethod: repo.authMethod, url: repo.url, token: pushToken }
     if (pushTokenError) {
       pushCredentialError = pushTokenError.message
       reporter.captureException(pushTokenError, {
-        tags: { component: 'runner', op: 'resolvePushCredential', repoId: repo.id },
+        tags: { component: 'runner', op: 'resolveRepoAuth', repoId: repo.id },
       })
       console.error(`[server/runner] Could not resolve push credentials for repo ${repo.id}:`, pushTokenError)
     }
@@ -616,6 +628,9 @@ export async function startRunServer(
       url: repo.url,
       defaultBranch: repo.defaultBranch,
       token: pushToken,
+      tokenUsername: repoAuth.tokenUsername,
+      sshPrivateKey: repoAuth.sshKey?.privateKey,
+      sshKnownHosts: repoAuth.sshKey?.knownHosts,
       authorName: repo.commitAuthorName?.trim() || 'Conduit',
       authorEmail: repo.commitAuthorEmail?.trim() || 'conduit@dovetail.com',
     }
@@ -691,7 +706,7 @@ export async function startRunServer(
   // glance, rather than only showing up later as an opaque `git push` failure.
   if (pushCredentialError) {
     orch.emitSystemMessage(
-      `⚠️  Could not obtain GitHub push credentials for this repository: ${pushCredentialError}\n` +
+      `⚠️  Could not obtain git push credentials for this repository: ${pushCredentialError}\n` +
       `   The agent can read the code, but "git push" (and opening PRs) will fail. ` +
       `Check the repository's authentication settings.`
     )
@@ -706,7 +721,7 @@ export async function startRunServer(
     model: agent.model,
     effort: agent.effort,
     prompt: triggerContext ? buildTriggeredPrompt(agent.prompt, triggerContext) : agent.prompt,
-    env: await buildRunnerEnvOverlay(agent, startedBy, pushToken),
+    env: await buildRunnerEnvOverlay(agent, startedBy, repoCli),
     mcpConfigContent,
     mcpOAuthServerKeys: mcpOAuthServers.length ? mcpOAuthServers.map((s) => s.key) : undefined,
     strictMcpConfig: agent.runner === 'claude' ? !agent.enableRepoMcps : undefined,

@@ -4,11 +4,13 @@
  * CLI's `-p --output-format stream-json`, with zero API calls.
  * A prompt containing "E2E_LONG" makes it stream one line then run until killed
  * (exercises the stop path); "E2E_RECONNECT" emits BEFORE/DURING/AFTER markers
- * gated by files under $CONDUIT_DATA_DIR/reconnect-gates; anything else
- * completes immediately.
+ * gated by files under $CONDUIT_DATA_DIR/reconnect-gates; "E2E_GIT_PUSH:<branch>"
+ * commits a file on <branch> in the checkout and pushes it to origin (proves the
+ * run's injected git credentials work); anything else completes immediately.
  */
 const fs = require('node:fs')
 const path = require('node:path')
+const { execFileSync } = require('node:child_process')
 
 let prompt = ''
 process.stdin.setEncoding('utf8')
@@ -27,6 +29,11 @@ process.stdin.on('end', () => {
     void runReconnect(say)
     return
   }
+  const push = /E2E_GIT_PUSH:(\S+)/.exec(prompt)
+  if (push) {
+    runGitPush(say, push[1])
+    return
+  }
   if (prompt.includes('E2E_LONG')) {
     const timer = setInterval(() => say('still working…'), 2000)
     process.on('SIGTERM', () => {
@@ -38,6 +45,25 @@ process.stdin.on('end', () => {
   console.log(JSON.stringify({ type: 'result', subtype: 'success', result: 'done' }))
   process.exit(0)
 })
+
+function runGitPush(say, branch) {
+  const git = (...args) => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  say(`CRED_ENV GITLAB_TOKEN=${process.env.GITLAB_TOKEN ? 'set' : 'unset'} GITLAB_HOST=${process.env.GITLAB_HOST ?? 'unset'} GH_TOKEN=${process.env.GH_TOKEN ? 'set' : 'unset'} GIT_SSH_COMMAND=${process.env.GIT_SSH_COMMAND ? 'set' : 'unset'}`)
+  try {
+    git('checkout', '-b', branch)
+    fs.writeFileSync(path.join(process.cwd(), `${branch}.txt`), `pushed by stub-claude at ${new Date().toISOString()}\n`)
+    git('add', '.')
+    git('commit', '-m', `stub-claude commit on ${branch}`)
+    git('push', 'origin', `HEAD:refs/heads/${branch}`)
+    say(`PUSHED ${branch} ${git('rev-parse', 'HEAD')}`)
+    console.log(JSON.stringify({ type: 'result', subtype: 'success', result: 'pushed' }))
+    process.exit(0)
+  } catch (err) {
+    say(`PUSH_FAILED ${String(err.stderr || err.message).replace(/:\/\/[^@\s]+@/g, '://***@')}`)
+    console.log(JSON.stringify({ type: 'result', subtype: 'error', result: 'push failed' }))
+    process.exit(1)
+  }
+}
 
 function gatePath(name) {
   const root = process.env.CONDUIT_DATA_DIR?.trim() || process.cwd()
