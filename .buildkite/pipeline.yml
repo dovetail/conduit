@@ -12,11 +12,16 @@
 #   DEPLOY_ROLE_ARN   — IAM role assumed for ECR push + EKS access
 #   CI_BASE_IMAGE     — base image for the deploy step
 #   EKS_CLUSTER       — target EKS cluster name
-#   BUILD_QUEUE       — agent queue for the build step
+#   BUILD_QUEUE       — arm64 agent queue for the test step
 #   DEPLOY_QUEUE      — agent queue for the deploy step
 #   SENTRY_AUTH_TOKEN — (optional, secret) enables Sentry source-map upload at
 #                       build time so prod stack traces symbolicate. When unset,
 #                       the build still succeeds and just skips the upload.
+#
+# The image build is pinned to ci-queue (native x86_64) below. It used to
+# share BUILD_QUEUE, which is arm64, so `docker buildx --platform
+# linux/amd64` ran every RUN under QEMU. Claude Code's installer is a Bun
+# binary that segfaults when that emulated CPU has no AVX.
 #
 # GIT_SHA / Sentry release: the image is tagged and released as $BUILDKITE_COMMIT
 # (passed as the GIT_SHA build arg → baked into the image → Sentry release at
@@ -60,10 +65,12 @@ steps:
     timeout_in_minutes: 10
 
   # ── Build + push image ─────────────────────────────────────────────────────
+  # Native amd64. ci-queue is the x86_64 fleet (c6id, AVX); the arm64
+  # public queue stays on the test step. Spot reclaim is retried below.
   - label: ":docker: build and push :ecr:"
     key: build
     agents:
-      queue: "$BUILD_QUEUE"
+      queue: "ci-queue"
     command:
       - 'echo "--- :docker: Configure buildx"'
       - docker buildx create --use --name conduit-builder || docker buildx use conduit-builder
