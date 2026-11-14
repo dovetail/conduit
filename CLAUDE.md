@@ -267,6 +267,19 @@ cost. Types live in `src/shared/types.ts` (`RunUsage`); parsing/formatting in
 - Stopped/failed runs report session time; usage only if the CLI got far enough to
   emit a `result` event.
 
+## Transient Provider Retry
+
+A triggered run (cron/webhook/slack — not manual) that fails within 15 minutes with a
+transient model-provider error (`failureKind: provider_unavailable`, e.g. cursor-agent's
+`RetriableError: [resource_exhausted]`, claude's `API Error: 529`) is started again by
+the server instead of announcing a failure: up to 2 retries after 5 and 15 minutes
+(`CONDUIT_RUN_RETRY_MAX_ATTEMPTS`, `0` disables). The failed attempt skips the publish
+notice; the final attempt publishes as normal. Runs that lasted longer are not retried
+(they may already have pushed branches or opened PRs). Retries ride on
+`TriggerContext.retry`; the timer is in-memory, so a restart during the backoff leaves
+the original failure on record. Code: `src/server/runRetry.ts`, `scheduleRunRetry` in
+`src/server/runner.ts`.
+
 ## Key Patterns
 
 **Adding a new entity type** — follow the publish targets pattern:

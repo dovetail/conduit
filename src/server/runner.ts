@@ -23,6 +23,7 @@ import { DEV_USER_ID } from './auth/config'
 import { LOGS_DIR } from '../main/utils/paths'
 import { removeWorktree } from './gitOps'
 import { buildRunFailureReport, failedStartLastLine, isDerivedWorkerControlFailure } from './runFailure'
+import { planTransientRetry, type RunRetryPlan } from './runRetry'
 import { resolvePushCredential } from './githubApp'
 import { repoCliEnvEntries, resolveRepoAuthSafe } from './repoAuth'
 import { publishRunResult } from './publisher'
@@ -151,6 +152,54 @@ export function notifyRunFinalized(): void {
   } catch (err) {
     console.error('[server/runner] run-finalized hook threw:', err)
   }
+}
+
+type RunStarter = (
+  agentId: string,
+  broadcast: BroadcastFn,
+  triggerContext?: TriggerContext,
+  startedBy?: string
+) => Promise<ExecutionRun>
+
+let retryStarter: RunStarter | null = null
+/** Replace how a retry is started (tests). Pass `null` to restore the default. */
+export function setRunRetryStarterForTests(fn: RunStarter | null): void {
+  retryStarter = fn
+}
+
+/**
+ * Start a failed run again after its backoff. Fire-and-forget: the timer is
+ * unref'd so it never holds the process open, and a retry lost to a server
+ * restart just leaves the original failure on record.
+ */
+function scheduleRunRetry(run: ExecutionRun, plan: RunRetryPlan, broadcast: BroadcastFn): void {
+  const base = run.triggerContext!
+  const timer = setTimeout(() => {
+    void (async () => {
+      try {
+        const retried = await (retryStarter ?? startRunServer)(
+          run.agentId,
+          broadcast,
+          { ...base, retry: plan.retry },
+          run.startedBy
+        )
+        appendRunLog(run.id, `Retry started as run ${retried.id}.`, run.logPath)
+        broadcast('trigger:fired', {
+          triggerId: base.triggerId,
+          agentId: run.agentId,
+          runId: retried.id,
+          triggerType: base.triggerType,
+        })
+      } catch (err) {
+        const e = err instanceof Error ? err : new Error(String(err))
+        appendRunLog(run.id, `⚠ Retry could not start: ${e.message}`, run.logPath)
+        reporter.captureException(e, {
+          tags: { component: 'runner', op: 'retryRun', runId: run.id, agentId: run.agentId },
+        })
+      }
+    })()
+  }, plan.delayMs)
+  timer.unref?.()
 }
 
 /** Delay before removing a run's workspace, so executables it spawned can exit
@@ -399,6 +448,29 @@ export function createRunOrchestration(opts: {
           durationMs,
           usage,
         })
+        // A transient provider failure on a triggered run is retried instead of
+        // announced: the retry's own outcome is what the channel should hear about.
+        const retryPlan =
+          status === 'failed'
+            ? planTransientRetry({
+                runId,
+                lastLine,
+                exitCode,
+                durationMs,
+                triggerContext: run.triggerContext,
+              })
+            : null
+        if (retryPlan) {
+          const mins = Math.round(retryPlan.delayMs / 60_000)
+          appendRunLog(
+            runId,
+            `Model provider unavailable — retrying in ${mins} minute${mins === 1 ? '' : 's'} ` +
+              `(retry ${retryPlan.attempt} of ${retryPlan.maxAttempts}).`,
+            run.logPath
+          )
+          scheduleRunRetry(run, retryPlan, broadcast)
+          return
+        }
         const outcomes = (await publishRunResult(agentId, finalRun)) ?? []
         for (const outcome of outcomes) {
           if (outcome.ok) {

@@ -682,10 +682,19 @@ export interface Trigger {
   updatedAt: number
 }
 
+/** Set on a run that the server started again after a transient provider failure. */
+export interface RunRetryInfo {
+  /** 1-based number of this retry. */
+  attempt: number
+  /** The failed run it replaces. */
+  previousRunId: string
+}
+
 export interface TriggerContext {
   triggerId: string
   triggerType: TriggerType
   payload?: string
+  retry?: RunRetryInfo
   slackMeta?: {
     userId: string
     userName?: string

@@ -67,7 +67,7 @@ export function registerRunTools(server: McpServer, env: ToolEnv): void {
     name: 'get_run',
     title: 'Get run',
     description:
-      'One run with a triage digest: status, timing, metering (cost and token usage as reported by the CLI, when available), trigger, failure classification (authentication, launch_config, disk_full, process_signal, worker_control, agent_error), tool-call counts, tool errors, the final result, the last assistant messages, and the stderr tail. Use get_run_log to page through the full log.',
+      'One run with a triage digest: status, timing, metering (cost and token usage as reported by the CLI, when available), trigger, failure classification (authentication, launch_config, disk_full, process_signal, worker_control, provider_unavailable, agent_error), tool-call counts, tool errors, the final result, the last assistant messages, and the stderr tail. Use get_run_log to page through the full log.',
     access: 'read',
     input: { runId: z.string() },
     run: async ({ runId }, { caller }) => {

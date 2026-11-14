@@ -15,6 +15,7 @@ export type RunFailureKind =
   | 'process_signal'
   | 'worker_control'
   | 'launch_config'
+  | 'provider_unavailable'
   | 'agent_error'
 
 const API_KEY_FAILURE_RE = /invalid api key|the provided api key is invalid/i
@@ -28,6 +29,25 @@ const CLI_LOGIN_RE = /\b(?:not logged in|login required)\b/i
 
 /** Immediate runner startup rejection (bad model id, removed flag) — not an agent crash. */
 const LAUNCH_CONFIG_RE = /\bcannot use this model\b|\bunknown option\b/i
+
+/**
+ * The model provider throttled, overloaded, or dropped the request — the CLI
+ * gave up and exited non-zero. Line-anchored on the CLI's own diagnostic so a
+ * mid-sentence mention in agent output never matches. Transient: a later
+ * attempt usually succeeds.
+ */
+const PROVIDER_UNAVAILABLE_RE = new RegExp(
+  [
+    // cursor-agent: "RetriableError: [resource_exhausted] Error",
+    // "RetriableError: [canceled] http/2 stream closed ..."
+    String.raw`^(?:error\s*:\s*)?RetriableError\b`,
+    String.raw`^(?:error\s*:\s*)?\[(?:resource_exhausted|unavailable|deadline_exceeded)\]`,
+    // claude / amp: "API Error: 529 overloaded_error", "API Error: 429 ..."
+    String.raw`^API Error:\s*(?:429|500|502|503|504|529)\b`,
+    String.raw`^(?:error\s*:\s*)?overloaded_error\b`,
+  ].join('|'),
+  'i'
+)
 
 const WORKER_CONTROL_PREFIX = '[Conduit: worker '
 
@@ -55,6 +75,10 @@ function isAuthenticationFailure(lastLine: string): boolean {
     MISSING_API_KEY_RE.test(line) ||
     CLI_LOGIN_RE.test(line)
   )
+}
+
+function isProviderUnavailableFailure(lastLine: string): boolean {
+  return PROVIDER_UNAVAILABLE_RE.test(trailingDiagnosticLine(lastLine))
 }
 
 function isLaunchConfigFailure(lastLine: string): boolean {
@@ -95,6 +119,7 @@ export function classifyRunFailure(
   if (isLaunchConfigFailure(text)) return 'launch_config'
   if (isDiskFullError(text)) return 'disk_full'
   if (typeof exitCode !== 'number') return 'process_signal'
+  if (isProviderUnavailableFailure(text)) return 'provider_unavailable'
   return 'agent_error'
 }
 
@@ -147,6 +172,8 @@ function failureMessage(kind: RunFailureKind, runner: RunnerType, exitCodeTag: s
       return `Agent credential rejected (${runner})`
     case 'launch_config':
       return `Agent runner rejected the launch configuration (${runner})`
+    case 'provider_unavailable':
+      return `Agent run failed: model provider unavailable (${runner})`
     case 'disk_full':
     case 'process_signal':
     case 'worker_control':

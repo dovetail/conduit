@@ -42,7 +42,7 @@ vi.mock('./observability', () => ({
 }))
 
 import { summarizeEvent } from '../shared/runEvents'
-import { createRunOrchestration } from './runner'
+import { createRunOrchestration, setRunRetryStarterForTests } from './runner'
 
 const WORKER_CONTROL_LINE =
   '[Conduit: worker worker-1 lost contact (lease expired) — failing this run.]'
@@ -170,5 +170,90 @@ describe('createRunOrchestration reporting', () => {
         tags: expect.objectContaining({ failureKind: 'authentication' }),
       })
     )
+  })
+
+  describe('transient provider failure', () => {
+    const TRANSIENT = 'RetriableError: [resource_exhausted] Error'
+
+    afterEach(() => {
+      vi.useRealTimers()
+      setRunRetryStarterForTests(null)
+    })
+
+    function seedTriggeredRun(): ExecutionRun {
+      return {
+        ...seedRun(),
+        startedAt: Date.now() - 5 * 60_000,
+        startedBy: 'user-1',
+        triggerContext: { triggerId: 'trigger-1', triggerType: 'cron' },
+      }
+    }
+
+    it('retries a triggered run instead of publishing a failure notice', async () => {
+      vi.useFakeTimers()
+      const starter = vi.fn(async () => ({ id: 'run-retry', agentId: 'agent-1' }) as ExecutionRun)
+      setRunRetryStarterForTests(starter)
+      const run = seedTriggeredRun()
+      const orch = createRunOrchestration({ run, broadcast, runner: 'cursor' })
+      orch.emitSystemMessage(TRANSIENT)
+
+      await orch.sink.onExit('failed', 1)
+
+      expect(publishRunResult).not.toHaveBeenCalled()
+      expect(starter).not.toHaveBeenCalled()
+      expect(fs.readFileSync(run.logPath, 'utf8')).toContain('retrying in 5 minutes (retry 1 of 2)')
+
+      await vi.advanceTimersByTimeAsync(5 * 60_000)
+
+      expect(starter).toHaveBeenCalledWith(
+        'agent-1',
+        broadcast,
+        { triggerId: 'trigger-1', triggerType: 'cron', retry: { attempt: 1, previousRunId: run.id } },
+        'user-1'
+      )
+      expect(broadcasts.some(([ch, p]) => ch === 'trigger:fired' && (p as { runId: string }).runId === 'run-retry')).toBe(true)
+    })
+
+    it('publishes the failure once the retries are used up', async () => {
+      const starter = vi.fn()
+      setRunRetryStarterForTests(starter)
+      const run = seedTriggeredRun()
+      run.triggerContext = {
+        triggerId: 'trigger-1',
+        triggerType: 'cron',
+        retry: { attempt: 2, previousRunId: 'run-0' },
+      }
+      const orch = createRunOrchestration({ run, broadcast, runner: 'cursor' })
+      orch.emitSystemMessage(TRANSIENT)
+
+      await orch.sink.onExit('failed', 1)
+
+      expect(publishRunResult).toHaveBeenCalledOnce()
+      expect(starter).not.toHaveBeenCalled()
+    })
+
+    it('publishes immediately for a manual run', async () => {
+      const run = seedRun()
+      const orch = createRunOrchestration({ run, broadcast, runner: 'cursor' })
+      orch.emitSystemMessage(TRANSIENT)
+
+      await orch.sink.onExit('failed', 1)
+
+      expect(publishRunResult).toHaveBeenCalledOnce()
+    })
+
+    it('records a retry that cannot start', async () => {
+      vi.useFakeTimers()
+      setRunRetryStarterForTests(vi.fn(async () => { throw new Error('Agent already has a run in progress') }))
+      const run = seedTriggeredRun()
+      const orch = createRunOrchestration({ run, broadcast, runner: 'cursor' })
+      orch.emitSystemMessage(TRANSIENT)
+      await orch.sink.onExit('failed', 1)
+
+      await vi.advanceTimersByTimeAsync(5 * 60_000)
+
+      expect(fs.readFileSync(run.logPath, 'utf8')).toContain('Retry could not start')
+      expect(captureException).toHaveBeenCalled()
+    })
   })
 })

@@ -44,7 +44,7 @@ export function registerPrompts(server: McpServer, { caller }: ToolEnv): void {
           jsonText(digest),
           '',
           'Work through it:',
-          '1. Decide whether this is an infrastructure problem (failureKind authentication, launch_config, disk_full, worker_control, process_signal) or the agent itself (agent_error, or a completed run that did the wrong thing).',
+          '1. Decide whether this is an infrastructure problem (failureKind authentication, launch_config, disk_full, worker_control, process_signal, provider_unavailable) or the agent itself (agent_error, or a completed run that did the wrong thing).',
           '2. Use get_run_log (onlyErrors, search, tail) to find the first thing that went wrong — not just the last line.',
           '3. For infrastructure causes, check get_conduit_status, get_agent, and check_mcp_server as relevant.',
           '4. For agent behaviour, read get_agent_prompt and say which instruction was missing, ambiguous, or ignored.',
