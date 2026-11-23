@@ -25,6 +25,7 @@ import {
   listMcpAccessTokens,
   revokeMcpAccessToken,
 } from '../main/db/queries/mcpAccessTokens'
+import { resolveAgentReferences } from './agentReferences'
 import { recordPromptChange } from '../main/db/queries/promptRevisions'
 import { CONDUIT_MCP_HTTP_PATH } from '../shared/types'
 import { resolveWorkerReconnectTimeoutMs } from '../shared/workerControl'
@@ -253,6 +254,14 @@ const handlers: Record<string, HandlerFn> = {
   // Agents
   'agents:list': (_args, _ws, ctx) => Promise.resolve(listAgents(ctx.userId, ctx.userGroupIds)),
   'agents:get': ([id]) => Promise.resolve(getAgent(id as string)),
+  'agents:references': async ([id], _ws, ctx) => {
+    if (!(await canAccessEntity('agent', id as string, ctx.userId, ctx.userGroupIds))) {
+      throw new ClientError('Access denied')
+    }
+    const agent = await getAgent(id as string)
+    if (!agent) throw new ClientError('Agent not found')
+    return resolveAgentReferences(agent, ctx)
+  },
   'agents:create': ([data], _ws, ctx) =>
     Promise.resolve(createAgent(data as Omit<AgentConfig, 'id' | 'createdAt' | 'updatedAt'>, ctx.userId)),
   'agents:update': async ([id, data], _ws, ctx) => {

@@ -5,6 +5,7 @@ import type {
   RunStatusChangePayload,
   RepoSyncStatusPayload,
   AgentConfig,
+  AgentReferences,
   ExecutionRun,
   RunLog,
   GlobalMcpServer,
@@ -172,6 +173,7 @@ export function createWsConduitClient(wsUrl: string): ConduitAPI {
     agents: {
       list: () => invoke<AgentConfig[]>('agents:list'),
       get: (id: string) => invoke<AgentConfig | null>('agents:get', id),
+      references: (id: string) => invoke<AgentReferences>('agents:references', id),
       create: (data: Omit<AgentConfig, 'id' | 'createdAt' | 'updatedAt'>) =>
         invoke<AgentConfig>('agents:create', data),
       update: (

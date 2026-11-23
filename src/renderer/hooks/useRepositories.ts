@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@renderer/lib/ipc'
+import { AGENT_REFERENCES_SEGMENT } from './useAgents'
 import type { RepositoryInput, RepoTestConnectionInput } from '@shared/types'
 
 const REPOS_KEY = ['repositories'] as const
@@ -80,6 +81,11 @@ export function useRepoSyncEvents() {
   useEffect(() => {
     const unsub = api.onRepoSyncStatus(() => {
       queryClient.invalidateQueries({ queryKey: REPOS_KEY })
+      // A repository the viewer cannot list reports its sync status through the agent's references.
+      queryClient.invalidateQueries({
+        queryKey: ['agents'],
+        predicate: (query) => query.queryKey[2] === AGENT_REFERENCES_SEGMENT,
+      })
     })
     return unsub
   }, [queryClient])
