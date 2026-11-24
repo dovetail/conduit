@@ -24,7 +24,11 @@ export function ShareDialog({ entityType, entityId, isOpen, onClose }: ShareDial
   const [searchQuery, setSearchQuery] = useState('')
 
   const { data: shares = [], isLoading: sharesLoading } = useShares(entityType, entityId)
-  const { data: searchResults = [] } = useSearchUsers(searchQuery)
+  const {
+    data: searchResults = [],
+    isFetching: searching,
+    isError: searchFailed,
+  } = useSearchUsers(searchQuery.trim())
   const { data: groups = [] } = useGroups()
   const { data: allUsers = [] } = useUsers()
 
@@ -83,7 +87,16 @@ export function ShareDialog({ entityType, entityId, isOpen, onClose }: ShareDial
     })
   }
 
+  const mutating = createShare.isPending || deleteShare.isPending
+  const mutationError = createShare.error ?? deleteShare.error
+  const mutationErrorMessage = mutationError
+    ? mutationError instanceof Error
+      ? mutationError.message
+      : 'Could not update sharing'
+    : null
+
   function handleToggleEveryone() {
+    if (mutating) return
     if (isSharedWithEveryone && everyoneShare) {
       deleteShare.mutate(everyoneShare.id)
     } else {
@@ -134,8 +147,10 @@ export function ShareDialog({ entityType, entityId, isOpen, onClose }: ShareDial
             <span className="text-sm text-[var(--text-primary)]">Share with everyone</span>
           </div>
           <button
+            type="button"
             onClick={handleToggleEveryone}
-            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+            disabled={mutating || sharesLoading}
+            className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors disabled:opacity-60 ${
               isSharedWithEveryone ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'
             }`}
             role="switch"
@@ -148,6 +163,15 @@ export function ShareDialog({ entityType, entityId, isOpen, onClose }: ShareDial
             />
           </button>
         </div>
+
+        {mutationErrorMessage && (
+          <p
+            role="alert"
+            className="rounded-lg border border-red-400/30 bg-red-400/10 px-3 py-2 text-xs text-red-400"
+          >
+            {mutationErrorMessage}
+          </p>
+        )}
 
         {/* Search users */}
         <div className="space-y-2">
@@ -165,13 +189,14 @@ export function ShareDialog({ entityType, entityId, isOpen, onClose }: ShareDial
           </div>
 
           {/* Search results dropdown */}
-          {searchQuery.length >= 2 && filteredSearchResults.length > 0 && (
+          {searchQuery.trim().length >= 2 && filteredSearchResults.length > 0 && (
             <div
               className="rounded-lg border border-[var(--border)] overflow-y-auto max-h-56"
               style={{ background: 'var(--bg-primary)' }}
             >
               {filteredSearchResults.map((user) => (
                 <button
+                  type="button"
                   key={user.id}
                   onClick={() => handleShareWithUser(user.id)}
                   className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-[var(--bg-secondary)] transition-colors"
@@ -206,8 +231,14 @@ export function ShareDialog({ entityType, entityId, isOpen, onClose }: ShareDial
             </div>
           )}
 
-          {searchQuery.length >= 2 && filteredSearchResults.length === 0 && (
-            <p className="text-xs text-[var(--text-secondary)] px-1">No users found</p>
+          {searchQuery.trim().length >= 2 && filteredSearchResults.length === 0 && (
+            <p className="text-xs text-[var(--text-secondary)] px-1">
+              {searching
+                ? 'Searching...'
+                : searchFailed
+                ? 'Search failed — try again'
+                : 'No users found'}
+            </p>
           )}
         </div>
 
@@ -223,6 +254,7 @@ export function ShareDialog({ entityType, entityId, isOpen, onClose }: ShareDial
             >
               {filteredGroups.map((group) => (
                 <button
+                  type="button"
                   key={group.id}
                   onClick={() => handleShareWithGroup(group.id)}
                   className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-[var(--bg-secondary)] transition-colors"

@@ -655,12 +655,14 @@ const handlers: Record<string, HandlerFn> = {
   // Users — use Okta Management API when available, fall back to local DB
   'users:list': async () => enrichUsers(await listUsers()),
   'users:search': async ([query]) => {
-    if (isAuthEnabled()) {
-      const { searchOktaUsers } = await import('./auth/okta')
-      const oktaResults = await searchOktaUsers(query as string)
-      if (oktaResults.length > 0) return oktaResults
-    }
-    return searchUsers(query as string)
+    // People who have logged in are always searchable; Okta (when configured)
+    // adds people who haven't yet. Merge so neither source can hide the other.
+    const local = await searchUsers(query as string)
+    if (!isAuthEnabled()) return local
+    const { searchOktaUsers } = await import('./auth/okta')
+    const remote = await searchOktaUsers(query as string)
+    const seen = new Set(local.map((u) => u.id))
+    return enrichUsers([...local, ...remote.filter((u) => !seen.has(u.id))])
   },
 
   // Groups

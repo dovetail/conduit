@@ -1,4 +1,4 @@
-import { eq, ilike, or } from 'drizzle-orm'
+import { and, eq, ilike, or } from 'drizzle-orm'
 import { getDb } from '../index'
 import { users } from '../schema'
 import type { User } from '../../../shared/types'
@@ -55,11 +55,17 @@ export async function listUsers(): Promise<User[]> {
   return rows.map(rowToUser)
 }
 
+/** Every whitespace-separated word must appear in the name or email (case-insensitive). */
 export async function searchUsers(query: string): Promise<User[]> {
-  const pattern = `%${query}%`
+  const words = query.trim().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return []
+  const conditions = words.map((word) => {
+    const pattern = `%${word.replace(/[\\%_]/g, '\\$&')}%`
+    return or(ilike(users.name, pattern), ilike(users.email, pattern))
+  })
   const rows = await getDb()
     .select()
     .from(users)
-    .where(or(ilike(users.name, pattern), ilike(users.email, pattern)))
+    .where(and(...conditions))
   return rows.map(rowToUser)
 }

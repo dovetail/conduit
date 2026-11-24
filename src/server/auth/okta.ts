@@ -1,6 +1,6 @@
 import { getOktaConfig, isAuthEnabled } from './config'
 import type { User } from '../../shared/types'
-import { oktaGroupDisplayName, oktaUserDisplayName } from './oktaDisplay'
+import { buildOktaUserSearchFilter, oktaGroupDisplayName, oktaUserDisplayName } from './oktaDisplay'
 
 // openid-client v6 is ESM-only, so we must use dynamic import
 type OpenIDClient = typeof import('openid-client')
@@ -123,16 +123,22 @@ export async function searchOktaUsers(query: string): Promise<User[]> {
   // Okta Management API base is the org URL (issuer without /oauth2/default)
   const orgUrl = issuer.replace(/\/oauth2\/.*$/, '')
 
-  // Okta search uses SCIM filter syntax
-  const filter = `profile.firstName sw "${query}" or profile.lastName sw "${query}" or profile.email sw "${query}"`
+  const filter = buildOktaUserSearchFilter(query)
+  if (!filter) return []
   const url = `${orgUrl}/api/v1/users?search=${encodeURIComponent(filter)}&limit=20`
 
-  const res = await fetch(url, {
-    headers: {
-      Authorization: `SSWS ${apiToken}`,
-      Accept: 'application/json',
-    },
-  })
+  let res: Response
+  try {
+    res = await fetch(url, {
+      headers: {
+        Authorization: `SSWS ${apiToken}`,
+        Accept: 'application/json',
+      },
+    })
+  } catch (err) {
+    console.error('[auth] Okta user search request failed:', err)
+    return []
+  }
 
   if (!res.ok) {
     console.error(`[auth] Okta user search failed: ${res.status} ${res.statusText}`)

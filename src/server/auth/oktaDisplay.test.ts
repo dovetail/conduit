@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { isOpaqueOktaId } from '../../shared/oktaId'
-import { needsDirectoryLookup, oktaGroupDisplayName, oktaUserDisplayName } from './oktaDisplay'
+import {
+  buildOktaUserSearchFilter,
+  needsDirectoryLookup,
+  oktaGroupDisplayName,
+  oktaUserDisplayName,
+} from './oktaDisplay'
 
 const OPAQUE_USER_ID = '00u1a2b3c4d5e6f7g8h9'
 const OPAQUE_GROUP_ID = '00g1a2b3c4d5e6f7g8h9'
@@ -95,5 +100,30 @@ describe('oktaGroupDisplayName', () => {
   it('falls back to the id when the profile is empty', () => {
     expect(oktaGroupDisplayName(null, OPAQUE_GROUP_ID)).toBe(OPAQUE_GROUP_ID)
     expect(oktaGroupDisplayName({ name: '  ' }, OPAQUE_GROUP_ID)).toBe(OPAQUE_GROUP_ID)
+  })
+})
+
+describe('buildOktaUserSearchFilter', () => {
+  it('is null for a blank query', () => {
+    expect(buildOktaUserSearchFilter('')).toBeNull()
+    expect(buildOktaUserSearchFilter('   ')).toBeNull()
+  })
+
+  it('matches a single word against name, email and login', () => {
+    expect(buildOktaUserSearchFilter('ada')).toBe(
+      '(profile.firstName sw "ada" or profile.lastName sw "ada" or profile.email sw "ada" or profile.login sw "ada")'
+    )
+  })
+
+  it('requires every word to match, so a full name finds the person', () => {
+    const filter = buildOktaUserSearchFilter('  Ada   Lovelace ')!
+    expect(filter.split(' and ')).toHaveLength(2)
+    expect(filter).toContain('profile.firstName sw "Ada"')
+    expect(filter).toContain('profile.lastName sw "Lovelace"')
+  })
+
+  it('escapes quotes and backslashes', () => {
+    const filter = buildOktaUserSearchFilter('o"brien\\x')!
+    expect(filter).toContain('sw "o\\"brien\\\\x"')
   })
 })

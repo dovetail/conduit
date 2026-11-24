@@ -48,3 +48,25 @@ export function oktaGroupDisplayName(
   const name = profile?.name?.trim()
   return name || fallbackId
 }
+
+function escapeOktaFilterValue(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+/**
+ * Okta SCIM filter for a type-ahead user search, or null when there is nothing
+ * to search for. Each whitespace-separated word must start a first name, last
+ * name, email or login, so "jane smith" finds Jane Smith (a single `sw` against
+ * the whole string would match neither field). Values are escaped so a quote
+ * in the query can't break the filter.
+ */
+export function buildOktaUserSearchFilter(query: string): string | null {
+  const words = query.trim().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return null
+  return words
+    .map((word) => {
+      const v = escapeOktaFilterValue(word)
+      return `(profile.firstName sw "${v}" or profile.lastName sw "${v}" or profile.email sw "${v}" or profile.login sw "${v}")`
+    })
+    .join(' and ')
+}

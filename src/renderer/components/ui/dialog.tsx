@@ -50,7 +50,7 @@ export function Dialog({ open, onClose, title, children, className }: DialogProp
       {/* Panel */}
       <div
         className={cn(
-          'relative z-10 w-full max-w-md rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] shadow-2xl animate-fade-in',
+          'relative z-10 flex max-h-[90vh] w-full max-w-md flex-col rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] shadow-2xl animate-fade-in',
           className
         )}
         role="dialog"
@@ -58,7 +58,7 @@ export function Dialog({ open, onClose, title, children, className }: DialogProp
         aria-labelledby="dialog-title"
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-4">
+        <div className="flex flex-shrink-0 items-center justify-between border-b border-[var(--border)] px-5 py-4">
           <h2 id="dialog-title" className="text-sm font-semibold text-[var(--text-primary)]">
             {title}
           </h2>
@@ -71,7 +71,7 @@ export function Dialog({ open, onClose, title, children, className }: DialogProp
           </button>
         </div>
         {/* Body */}
-        <div className="px-5 py-4">{children}</div>
+        <div className="min-h-0 overflow-y-auto px-5 py-4">{children}</div>
       </div>
     </div>,
     document.body
