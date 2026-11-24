@@ -90,6 +90,8 @@ import { sessionMiddleware } from './auth/middleware'
 import { authRouter as authRoutes } from './auth/routes'
 import { ensureDevUser, getDevContext } from './auth/devBypass'
 import { canAccessEntity, isEntityOwner } from '../main/db/queries/access'
+import { dropInaccessibleReferences } from './agentCreateReferences'
+import { assertNewPublishTargetsAllowed } from './agentUpdateReferences'
 import { assertAgentRepositoryChangeAllowed, type RepositoryAccessOf } from './agentRepoAccess'
 import { deleteClient as deleteMcpOAuthClient } from '../main/db/queries/mcpOAuthClients'
 import { deleteToken as deleteMcpOAuthToken } from '../main/db/queries/oauthTokens'
@@ -274,17 +276,21 @@ const handlers: Record<string, HandlerFn> = {
   },
   'agents:create': async ([data], _ws, ctx) => {
     const input = data as Omit<AgentConfig, 'id' | 'createdAt' | 'updatedAt'>
-    await assertAgentRepositoryChangeAllowed(null, input.repositoryId, repositoryAccessFor(ctx))
-    return createAgent(input, ctx.userId)
+    return createAgent(await dropInaccessibleReferences(input, ctx), ctx.userId)
   },
   'agents:update': async ([id, data], _ws, ctx) => {
     if (!(await canAccessEntity('agent', id as string, ctx.userId, ctx.userGroupIds))) {
       throw new ClientError('Access denied')
     }
     const patch = data as Partial<Omit<AgentConfig, 'id' | 'createdAt' | 'updatedAt'>>
-    if (patch.repositoryId !== undefined) {
+    if (patch.repositoryId !== undefined || patch.publishTargetIds !== undefined) {
       const existing = await getAgent(id as string)
-      await assertAgentRepositoryChangeAllowed(existing?.repositoryId, patch.repositoryId, repositoryAccessFor(ctx))
+      if (patch.repositoryId !== undefined) {
+        await assertAgentRepositoryChangeAllowed(existing?.repositoryId, patch.repositoryId, repositoryAccessFor(ctx))
+      }
+      if (patch.publishTargetIds !== undefined) {
+        await assertNewPublishTargetsAllowed(existing?.publishTargetIds, patch.publishTargetIds, ctx)
+      }
     }
     const before = patch.prompt !== undefined ? await getAgent(id as string) : null
     const updated = await updateAgent(id as string, patch)
