@@ -720,11 +720,52 @@ export interface TriggerFiredPayload {
   triggerType: TriggerType
 }
 
+/**
+ * Whether the viewer can see an entity an agent points at.
+ * - `visible`: the viewer owns it or it is shared with them.
+ * - `hidden`: it exists and the agent still uses it, but it is not shared with the viewer.
+ * - `missing`: the stored id matches nothing (the entity was deleted).
+ */
+export type AgentReferenceAccess = 'visible' | 'hidden' | 'missing'
+
+/** The repository an agent is attached to. Carries no URL, credentials or paths. */
+export interface AgentRepositoryReference {
+  id: string
+  access: AgentReferenceAccess
+  /** Unset when `access` is `missing`. */
+  name?: string
+  defaultBranch?: string
+  syncStatus?: RepoSyncStatus
+  syncError?: string
+}
+
+/** A publish target an agent notifies. Carries no config, so no tokens or URLs. */
+export interface AgentPublishTargetReference {
+  id: string
+  access: AgentReferenceAccess
+  /** Unset when `access` is `missing`. */
+  name?: string
+  type?: PublishTargetType
+  enabled?: boolean
+}
+
+/**
+ * What an agent is attached to, resolved for the viewer. The pickers in the
+ * editor list only what the viewer can see, so this is how the editor learns
+ * about attachments that the viewer cannot pick from.
+ */
+export interface AgentReferences {
+  repository?: AgentRepositoryReference
+  publishTargets: AgentPublishTargetReference[]
+}
+
 // IPC API surface exposed via contextBridge
 export interface ConduitAPI {
   agents: {
     list: () => Promise<AgentConfig[]>
     get: (id: string) => Promise<AgentConfig | null>
+    /** The repository and publish targets the agent is attached to, including ones not shared with the viewer. */
+    references: (id: string) => Promise<AgentReferences>
     create: (data: Omit<AgentConfig, 'id' | 'createdAt' | 'updatedAt'>) => Promise<AgentConfig>
     update: (id: string, data: Partial<Omit<AgentConfig, 'id' | 'createdAt' | 'updatedAt'>>) => Promise<AgentConfig>
     delete: (id: string) => Promise<void>

@@ -4,6 +4,7 @@ import { buildCloneInput } from '@shared/agentClone'
 import type { AgentConfig } from '@shared/types'
 
 const AGENTS_KEY = ['agents'] as const
+export const AGENT_REFERENCES_SEGMENT = 'references'
 
 export function useAgents() {
   return useQuery({
@@ -27,6 +28,19 @@ export function useAgent(id: string) {
   return useQuery({
     queryKey: ['agents', id],
     queryFn: () => api.agents.get(id),
+    enabled: Boolean(id),
+  })
+}
+
+/**
+ * The repository and publish targets an agent is attached to, including ones that
+ * are not shared with the viewer and so are missing from the repository and
+ * publish-target lists. Cached under the agent's key, so saving the agent refreshes it.
+ */
+export function useAgentReferences(id: string) {
+  return useQuery({
+    queryKey: ['agents', id, AGENT_REFERENCES_SEGMENT],
+    queryFn: () => api.agents.references(id),
     enabled: Boolean(id),
   })
 }

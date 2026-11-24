@@ -6,10 +6,15 @@ import { EnvVarEditor } from './EnvVarEditor'
 import { McpEditor } from './McpEditor'
 import { TriggerEditor } from './TriggerEditor'
 import { CollapsibleSection } from './CollapsibleSection'
-import { useAgent, useUpdateAgent, useRunnerClis } from '@renderer/hooks/useAgents'
+import { useAgent, useAgentReferences, useUpdateAgent, useRunnerClis } from '@renderer/hooks/useAgents'
 import { usePublishTargets } from '@renderer/hooks/usePublishTargets'
 import { useRepositories, useRepoSyncEvents } from '@renderer/hooks/useRepositories'
 import { useTriggers } from '@renderer/hooks/useTriggers'
+import {
+  unlistedPublishTargets,
+  unlistedRepositoryOption,
+  workspaceLabel as describeWorkspace,
+} from './agentReferenceLabels'
 import { useUIStore } from '@renderer/store/ui'
 import { cn } from '@renderer/lib/utils'
 import type { AgentConfig, RunnerType, RunnerEffort } from '@shared/types'
@@ -172,8 +177,9 @@ export interface AgentEditorHandle {
 export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(function AgentEditor({ agentId, onSaveStateChange }, ref) {
   const { data: agent, isLoading } = useAgent(agentId)
   const updateAgent = useUpdateAgent()
-  const { data: allPublishTargets = [] } = usePublishTargets()
-  const { data: allRepos = [] } = useRepositories()
+  const { data: allPublishTargets = [], isSuccess: publishTargetsLoaded } = usePublishTargets()
+  const { data: allRepos = [], isSuccess: reposLoaded } = useRepositories()
+  const { data: references } = useAgentReferences(agentId)
   const { data: triggers = [] } = useTriggers(agentId)
   useRepoSyncEvents()
   const { setShowPublishTargets, setShowRepositories } = useUIStore()
@@ -337,11 +343,22 @@ export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(funct
   const promptSummary = promptLen > 0 ? `${promptLen} chars` : 'empty'
 
   const selectedRepo = allRepos.find((r) => r.id === draft.repositoryId)
-  const workspaceLabel = selectedRepo
-    ? `${selectedRepo.name} (${selectedRepo.defaultBranch})`
-    : draft.workingDir
-    ? 'custom dir'
-    : 'ephemeral'
+  const workspaceLabel = describeWorkspace({
+    repositoryId: draft.repositoryId,
+    workingDir: draft.workingDir,
+    visibleRepo: selectedRepo,
+    reference: references?.repository,
+  })
+  // The pickers list only what is shared with the viewer. Attachments outside that list
+  // still apply to runs, so they are shown here rather than reading as "None".
+  const repoReference = references?.repository?.id === draft.repositoryId ? references?.repository : undefined
+  const unlistedRepoOption = reposLoaded
+    ? unlistedRepositoryOption(draft.repositoryId, allRepos, repoReference)
+    : undefined
+  const attachedRepoStatus = selectedRepo ?? (unlistedRepoOption ? repoReference : undefined)
+  const unlistedTargets = publishTargetsLoaded
+    ? unlistedPublishTargets(draft.publishTargetIds, allPublishTargets, references)
+    : []
   const timeoutLabel =
     draft.bgTaskTimeoutSeconds != null ? `timeout ${draft.bgTaskTimeoutSeconds}s` : 'default timeout'
   const capLabel = draft.memoryCapMb != null ? `cap ${draft.memoryCapMb}MB` : 'default cap'
@@ -467,6 +484,9 @@ export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(funct
               className="w-full h-9 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
             >
               <option value="">None (ephemeral workspace)</option>
+              {unlistedRepoOption && (
+                <option value={unlistedRepoOption.value}>{unlistedRepoOption.label}</option>
+              )}
               {allRepos.map((repo) => (
                 <option key={repo.id} value={repo.id}>
                   {repo.name} ({repo.defaultBranch}) — {repo.syncStatus === 'ready' ? 'ready' : repo.syncStatus}
@@ -474,8 +494,8 @@ export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(funct
               ))}
             </select>
             {draft.repositoryId && (() => {
-              const repo = allRepos.find((r) => r.id === draft.repositoryId)
-              if (!repo) return null
+              const repo = attachedRepoStatus
+              if (!repo?.syncStatus) return null
               return (
                 <div className="flex items-center gap-2 text-xs">
                   <div className={cn(
@@ -491,6 +511,13 @@ export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(funct
                 </div>
               )
             })()}
+            {unlistedRepoOption && (
+              <p className="text-xs text-amber-400">
+                {repoReference?.access === 'missing'
+                  ? 'The attached repository was deleted. Runs fail until you pick another or choose None.'
+                  : 'The attached repository is not shared with you, so it is not in the list. Runs still use it.'}
+              </p>
+            )}
             <p className="text-xs text-[var(--text-secondary)]">
               Assign a managed repository to give the agent an isolated worktree per run.{' '}
               <button
@@ -648,7 +675,7 @@ export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(funct
             <label className="block text-xs font-medium text-[var(--text-secondary)]">
               Publish Targets
             </label>
-            {allPublishTargets.length === 0 ? (
+            {allPublishTargets.length === 0 && unlistedTargets.length === 0 ? (
               <div className="rounded-lg border border-dashed border-[var(--border)] px-4 py-3 text-center">
                 <p className="text-xs text-[var(--text-secondary)]">
                   No publish targets configured.
@@ -662,6 +689,35 @@ export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(funct
               </div>
             ) : (
               <div className="space-y-1.5">
+                {unlistedTargets.map((target) => (
+                  <button
+                    key={target.id}
+                    type="button"
+                    title="Click to detach this publish target"
+                    onClick={() => {
+                      const next = (draft.publishTargetIds ?? []).filter((id) => id !== target.id)
+                      handleChange('publishTargetIds', next.length > 0 ? next : undefined)
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border text-left transition-all border-[var(--accent)] bg-[var(--accent)]/10"
+                  >
+                    <div className="w-4 h-4 rounded border-2 flex-shrink-0 flex items-center justify-center bg-[var(--accent)] border-[var(--accent)]">
+                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                        <path d="M2 5L4 7L8 3" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </div>
+                    <Send className="h-3 w-3 flex-shrink-0 text-[var(--text-secondary)]" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-[var(--text-primary)] truncate">{target.name}</p>
+                      <p className="text-[10px] text-amber-400 truncate">
+                        {target.note}
+                        {target.access === 'hidden' ? ' · still attached to this agent' : ''}
+                      </p>
+                    </div>
+                    {target.enabled === false && (
+                      <span className="text-[10px] text-amber-400 flex-shrink-0">disabled</span>
+                    )}
+                  </button>
+                ))}
                 {allPublishTargets.map((target) => {
                   const selected = (draft.publishTargetIds ?? []).includes(target.id)
                   return (
