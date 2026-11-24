@@ -90,6 +90,7 @@ import { sessionMiddleware } from './auth/middleware'
 import { authRouter as authRoutes } from './auth/routes'
 import { ensureDevUser, getDevContext } from './auth/devBypass'
 import { canAccessEntity, isEntityOwner } from '../main/db/queries/access'
+import { assertAgentRepositoryChangeAllowed, type RepositoryAccessOf } from './agentRepoAccess'
 import { deleteClient as deleteMcpOAuthClient } from '../main/db/queries/mcpOAuthClients'
 import { deleteToken as deleteMcpOAuthToken } from '../main/db/queries/oauthTokens'
 import { auditMcpOAuth } from './mcpOAuth/audit'
@@ -250,6 +251,15 @@ app.use((err: unknown, req: express.Request, _res: express.Response, next: expre
 
 type HandlerFn = (args: unknown[], ws: WebSocket, ctx: RequestContext) => Promise<unknown>
 
+/** Access of a repository for this caller, as the agent-reference guard needs it. */
+function repositoryAccessFor(ctx: RequestContext): RepositoryAccessOf {
+  return async (repositoryId) => {
+    const repo = await getRepository(repositoryId)
+    if (!repo) return 'missing'
+    return (await canAccessEntity('repository', repositoryId, ctx.userId, ctx.userGroupIds)) ? 'visible' : 'hidden'
+  }
+}
+
 const handlers: Record<string, HandlerFn> = {
   // Agents
   'agents:list': (_args, _ws, ctx) => Promise.resolve(listAgents(ctx.userId, ctx.userGroupIds)),
@@ -262,13 +272,20 @@ const handlers: Record<string, HandlerFn> = {
     if (!agent) throw new ClientError('Agent not found')
     return resolveAgentReferences(agent, ctx)
   },
-  'agents:create': ([data], _ws, ctx) =>
-    Promise.resolve(createAgent(data as Omit<AgentConfig, 'id' | 'createdAt' | 'updatedAt'>, ctx.userId)),
+  'agents:create': async ([data], _ws, ctx) => {
+    const input = data as Omit<AgentConfig, 'id' | 'createdAt' | 'updatedAt'>
+    await assertAgentRepositoryChangeAllowed(null, input.repositoryId, repositoryAccessFor(ctx))
+    return createAgent(input, ctx.userId)
+  },
   'agents:update': async ([id, data], _ws, ctx) => {
     if (!(await canAccessEntity('agent', id as string, ctx.userId, ctx.userGroupIds))) {
       throw new ClientError('Access denied')
     }
     const patch = data as Partial<Omit<AgentConfig, 'id' | 'createdAt' | 'updatedAt'>>
+    if (patch.repositoryId !== undefined) {
+      const existing = await getAgent(id as string)
+      await assertAgentRepositoryChangeAllowed(existing?.repositoryId, patch.repositoryId, repositoryAccessFor(ctx))
+    }
     const before = patch.prompt !== undefined ? await getAgent(id as string) : null
     const updated = await updateAgent(id as string, patch)
     if (before && patch.prompt !== undefined) {

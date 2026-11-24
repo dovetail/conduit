@@ -356,6 +356,9 @@ export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(funct
     ? unlistedRepositoryOption(draft.repositoryId, allRepos, repoReference)
     : undefined
   const attachedRepoStatus = selectedRepo ?? (unlistedRepoOption ? repoReference : undefined)
+  // Attached to a repository this viewer can't see: it keeps running, but only people
+  // with access can change it. A deleted repository stays changeable so it can be cleared.
+  const repoLocked = repoReference?.access === 'hidden'
   const unlistedTargets = publishTargetsLoaded
     ? unlistedPublishTargets(draft.publishTargetIds, allPublishTargets, references)
     : []
@@ -481,7 +484,9 @@ export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(funct
             <select
               value={draft.repositoryId ?? ''}
               onChange={(e) => handleChange('repositoryId', e.target.value || undefined)}
-              className="w-full h-9 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
+              disabled={repoLocked}
+              title={repoLocked ? "This agent uses a repository that isn't shared with you" : undefined}
+              className="w-full h-9 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 text-sm text-[var(--text-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-60"
             >
               <option value="">None (ephemeral workspace)</option>
               {unlistedRepoOption && (
@@ -515,7 +520,7 @@ export const AgentEditor = forwardRef<AgentEditorHandle, AgentEditorProps>(funct
               <p className="text-xs text-amber-400">
                 {repoReference?.access === 'missing'
                   ? 'The attached repository was deleted. Runs fail until you pick another or choose None.'
-                  : 'The attached repository is not shared with you, so it is not in the list. Runs still use it.'}
+                  : 'The attached repository is not shared with you, so it is not in the list. Runs still use it, and only people with access can change it.'}
               </p>
             )}
             <p className="text-xs text-[var(--text-secondary)]">
