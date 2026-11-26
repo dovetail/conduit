@@ -6,18 +6,20 @@
  * reconnect window; a matching RecoverRun reconstructs the runner pipeline
  * from the durable log cursor. Unadopted remotes fail once when the timer fires.
  */
-import type { ExecutionRun, RunnerType, RunStatus } from '../shared/types'
+import type { ExecutionRun, Repository, RunnerType, RunStatus } from '../shared/types'
 import type { WorkerHandle } from '../shared/worker'
 import type { RecoverableRunBinding, RecoverRunResult } from './workerControl'
 import { peekWorkerControlPlane } from './workerControl'
 import { getRun, getOrphanedRuns, updateRun, updateRunIfRunning } from '../main/db/queries/runs'
 import { getAgent } from '../main/db/queries/agents'
+import { getRepository } from '../main/db/queries/repositories'
 import { readHighestContiguousSequence } from './runDeliveryLog'
 import {
   appendRunLog,
   createRunOrchestration,
   getActiveRunIds,
   notifyRunFinalized,
+  startRepoTokenRefresh,
   type BroadcastFn,
 } from './runner'
 import { reporter } from './observability'
@@ -175,6 +177,16 @@ async function failUnadoptedRemote(
   notifyRunFinalized()
 }
 
+/**
+ * The GitHub App repo whose installation token the run must keep refreshing,
+ * or undefined when the run has no repo or the repo uses other auth.
+ */
+async function githubAppRepoFor(repositoryId: string | undefined): Promise<Repository | undefined> {
+  if (!repositoryId) return undefined
+  const repo = await getRepository(repositoryId)
+  return repo?.authMethod === 'githubapp' ? repo : undefined
+}
+
 async function bindRecoveredRun(
   run: ExecutionRun,
   broadcast: BroadcastFn
@@ -190,6 +202,7 @@ async function bindRecoveredRun(
   const agent = await getAgent(run.agentId)
   const runner: RunnerType = agent?.runner ?? 'claude'
   const orch = createRunOrchestration({ run, broadcast, runner })
+  const refreshableRepo = await githubAppRepoFor(agent?.repositoryId)
   const workerId = run.workerId!
   const handle: WorkerHandle = {
     runId: run.id,
@@ -198,6 +211,9 @@ async function bindRecoveredRun(
     workerId,
     cancel: async () => {
       peekWorkerControlPlane()?.requestCancel(run.id)
+    },
+    updateRepoToken: async (token) => {
+      peekWorkerControlPlane()?.sendRepoToken(run.id, token)
     },
   }
 
@@ -216,9 +232,14 @@ async function bindRecoveredRun(
     handle,
     durableSequence,
     onAdopted: () => {
+      // A reconnect that re-adopts an already-live run must not arm a second timer.
+      const firstAdoption = !recoveredBindings.has(run.id)
       orch.register(handle)
       recoveredBindings.set(run.id, binding)
       clearExpiry(run.id)
+      if (firstAdoption && refreshableRepo) {
+        startRepoTokenRefresh(run.id, refreshableRepo, handle, orch)
+      }
     },
     onAbandoned: () => {
       orch.abort()

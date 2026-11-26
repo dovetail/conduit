@@ -33,7 +33,7 @@ vi.mock('../main/utils/mcp', async (importOriginal) => ({
   resolveRunMcpAuth: (...args: unknown[]) => resolveRunMcpAuth(...args),
 }))
 
-import { startRepoTokenRefresh, startMcpAuthRefresh } from './runner'
+import { REPO_TOKEN_REFRESH_MS, startRepoTokenRefresh, startMcpAuthRefresh } from './runner'
 
 const REPO = { id: 'repo-1', url: 'https://github.com/acme/widgets.git', authMethod: 'githubapp' as const }
 
@@ -74,6 +74,11 @@ describe('startRepoTokenRefresh', () => {
     await vi.advanceTimersByTimeAsync(1000)
     expect(updateRepoToken.mock.calls).toEqual([['ghs_1'], ['ghs_2']])
     expect(messages).toEqual([])
+  })
+
+  it('refreshes twice within one installation token lifetime', () => {
+    const INSTALLATION_TOKEN_LIFETIME_MS = 60 * 60_000
+    expect(REPO_TOKEN_REFRESH_MS * 2).toBeLessThan(INSTALLATION_TOKEN_LIFETIME_MS)
   })
 
   it('stops once the run is finalized', async () => {

@@ -550,8 +550,12 @@ export function createRunOrchestration(opts: {
   }
 }
 
-/** GitHub App installation tokens last an hour; replace them well before that. */
-export const REPO_TOKEN_REFRESH_MS = 45 * 60_000
+/**
+ * GitHub App installation tokens last an hour. Refreshing every 15 minutes means
+ * a refresh that never reaches the worker still leaves it a valid token: the
+ * next attempt lands before the current one expires.
+ */
+export const REPO_TOKEN_REFRESH_MS = 15 * 60_000
 
 /**
  * Periodically mint a fresh repo token and hand it to the worker, so `git push`

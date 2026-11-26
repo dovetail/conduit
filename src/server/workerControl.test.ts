@@ -976,6 +976,25 @@ describe('WorkerControlPlane detach, rebind, and idempotent ACK', () => {
     expect(events).toEqual(['after-rebind'])
   })
 
+  it('hands a token minted while the socket was detached to the worker when the run rebinds', async () => {
+    const { worker, handle } = await startAssignedRun()
+    worker.ws.terminate()
+    await waitDisconnected(ctx)
+    await handle.updateRepoToken?.('ghs_minted_while_detached')
+
+    const resumed = await connectWorker(ctx, {
+      workerId: 'w1',
+      activeRunIds: [SPEC.runId],
+      pendingRunIds: [SPEC.runId],
+    })
+    expect(await resumed.next()).toEqual({ type: 'run:resume', runId: SPEC.runId, sequence: 1 })
+    expect(await resumed.next()).toEqual({
+      type: 'run:credentials',
+      runId: SPEC.runId,
+      repoToken: 'ghs_minted_while_detached',
+    })
+  })
+
   it('does not let a foreign worker identity adopt or inject into a detached run', async () => {
     const { worker, events, exits } = await startAssignedRun('owner')
     worker.ws.terminate()
