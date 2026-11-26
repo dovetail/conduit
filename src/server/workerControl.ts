@@ -164,6 +164,11 @@ interface Assignment {
   recovered: boolean
   mode: DeliveryMode
   workspacePath?: string
+  /**
+   * Latest repo token handed to this run. A refresh minted while the socket is
+   * detached never reaches the worker, so the token is sent again on rebind.
+   */
+  repoToken?: string
   started: boolean
   /**
    * Highest contiguous sequence durably applied. Tracks the delivery log's
@@ -442,6 +447,17 @@ export class WorkerControlPlane {
     if (a) this.sendOn(a.ws, { type: 'run:cancel', runId })
   }
 
+  /**
+   * Hand a freshly minted repo token to the worker running a run. The token is
+   * also kept on the assignment so a detached run receives it when it rebinds.
+   */
+  sendRepoToken(runId: string, token: string): void {
+    const a = this.runs.get(runId)
+    if (!a) return
+    a.repoToken = token
+    this.sendOn(a.ws, { type: 'run:credentials', runId, repoToken: token })
+  }
+
   private buildHandle(runId: string, assignment: Assignment): WorkerHandle {
     return {
       runId,
@@ -454,10 +470,8 @@ export class WorkerControlPlane {
       cancel: async () => {
         this.requestCancel(runId)
       },
-      // Best effort: a detached run misses this refresh and gets the next one.
       updateRepoToken: async (token) => {
-        const a = this.runs.get(runId)
-        if (a) this.sendOn(a.ws, { type: 'run:credentials', runId, repoToken: token })
+        this.sendRepoToken(runId, token)
       },
       updateMcpAuth: async (auth) => {
         const a = this.runs.get(runId)
@@ -1052,6 +1066,13 @@ export class WorkerControlPlane {
       runId: assignment.spec.runId,
       sequence: assignment.durableSequence,
     })
+    if (assignment.repoToken) {
+      this.sendOn(ws, {
+        type: 'run:credentials',
+        runId: assignment.spec.runId,
+        repoToken: assignment.repoToken,
+      })
+    }
   }
 
   private installTerminalRecovery(recovered: RecoveredTerminalRun, ws: WebSocket): void {

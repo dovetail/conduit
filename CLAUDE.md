@@ -72,9 +72,10 @@ can still be adopted), `worker:heartbeat` (30s lease with active run ids),
 a per-run delivery sequence. Server→worker `run:assign` (RunSpec plus
 `reconnectTimeoutMs`), `run:ack` (highest contiguous sequence durably applied),
 `run:resume` (replay from the durable cursor), `run:reject`, `run:cancel`,
-`run:credentials` (a freshly minted GitHub App token every 45 minutes; the
-worker re-points the checkout's tokenized `origin` and the `gh` wrapper it puts
-on PATH, since installation tokens expire after an hour — older workers ignore it),
+`run:credentials` (a freshly minted GitHub App token every 15 minutes, and again
+when a detached run rebinds or an adopted run starts refreshing; the worker
+re-points the checkout's tokenized `origin` and the `gh` wrapper it puts on PATH,
+since installation tokens expire after an hour — older workers ignore it),
 `run:mcpAuth` (renewed MCP OAuth bearers keyed by server key; see MCP OAuth
 run-time injection — older workers ignore it).
 

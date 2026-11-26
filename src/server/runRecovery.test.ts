@@ -52,6 +52,8 @@ const getAgent = vi.fn(async (id: string) =>
 const publishRunResult = vi.fn(async () => {})
 const captureMessage = vi.fn()
 const captureException = vi.fn()
+const getRepository = vi.fn(async (_id: string) => null)
+const resolvePushCredential = vi.fn()
 
 vi.mock('../main/db/queries/runs', () => ({
   getRun: (id: string) => getRun(id),
@@ -65,6 +67,15 @@ vi.mock('../main/db/queries/runs', () => ({
 
 vi.mock('../main/db/queries/agents', () => ({
   getAgent: (id: string) => getAgent(id),
+}))
+
+vi.mock('../main/db/queries/repositories', () => ({
+  getRepository: (id: string) => getRepository(id),
+}))
+
+vi.mock('./githubApp', () => ({
+  resolvePushCredential: (...args: unknown[]) => resolvePushCredential(...args),
+  githubTokenEnvEntry: vi.fn(() => ({})),
 }))
 
 vi.mock('./publisher', () => ({
@@ -83,7 +94,7 @@ vi.mock('./observability', () => ({
 }))
 
 import { recoverRemoteRun, reconcileOrphanedRuns, stopOrphanReconciliation } from './runRecovery'
-import { getActiveRunIds, stopRun } from './runner'
+import { getActiveRunIds, REPO_TOKEN_REFRESH_MS, stopRun } from './runner'
 
 const RECOVERABLE = ['remote', 'eks', 'fargate'] as const
 
@@ -493,6 +504,41 @@ describe('recoverRemoteRun', () => {
     await expect(binding.sink.onExit('completed', 0)).resolves.toBeUndefined()
     expect(runs.get(run.id)?.status).toBe('completed')
     expect(captureException).toHaveBeenCalled()
+  })
+
+  it('starts refreshing the repo token of a GitHub App run once the plane adopts it', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const run = await seedRemote({ agentId: 'agent-github' })
+      getAgent.mockResolvedValueOnce({
+        id: run.agentId,
+        name: 'GitHub agent',
+        runner: 'claude',
+        prompt: 'hi',
+        envVars: {},
+        mcpConfig: { mcpServers: {} },
+        createdAt: 1,
+        updatedAt: 1,
+        repositoryId: 'repo-github',
+      })
+      getRepository.mockResolvedValueOnce({
+        id: 'repo-github',
+        url: 'https://github.com/acme/widgets.git',
+        authMethod: 'githubapp',
+      })
+      resolvePushCredential.mockResolvedValue({ token: 'ghs_fresh' })
+
+      const binding = (await recoverRemoteRun(run.id, 'worker-1', broadcast))!
+      expect(resolvePushCredential).not.toHaveBeenCalled()
+      if (!('onAdopted' in binding)) throw new Error('expected a live binding')
+      binding.onAdopted?.()
+
+      await vi.advanceTimersByTimeAsync(REPO_TOKEN_REFRESH_MS)
+      expect(resolvePushCredential).toHaveBeenCalledTimes(1)
+      expect(resolvePushCredential).toHaveBeenCalledWith(expect.objectContaining({ id: 'repo-github' }))
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('routes stop through the recovered handle so cancel can use the rebound socket', async () => {
