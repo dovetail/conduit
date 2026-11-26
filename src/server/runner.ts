@@ -10,6 +10,7 @@ import { getRepository } from '../main/db/queries/repositories'
 import { resolveRunnerCredential } from '../main/db/queries/agentCredentials'
 import { getRunnerTimeout } from '../main/db/queries/runnerSettings'
 import { resolveBgTaskTimeoutSeconds, bgTaskTimeoutEnvEntry } from './runnerTimeout'
+import { resolveMemoryCapMb } from './runnerMemory'
 import { deleteWorkspace } from '../main/execution/workspace'
 import {
   buildRunMcpConfig,
@@ -803,6 +804,7 @@ export async function startRunServer(
     mcpOAuthServerKeys: mcpOAuthServers.length ? mcpOAuthServers.map((s) => s.key) : undefined,
     strictMcpConfig: agent.runner === 'claude' ? !agent.enableRepoMcps : undefined,
     workerMemoryMib: agent.workerMemoryMib,
+    memoryCapMb: resolveMemoryCapMb(agent.memoryCapMb) || undefined,
     workspace: workspaceSpec,
   }
 

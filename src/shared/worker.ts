@@ -80,6 +80,11 @@ export interface RunSpec {
    * The Fargate factory rejects values outside 4096–16384 (steps of 1024).
    */
   workerMemoryMib?: number
+  /**
+   * Per-process Node heap cap in MB (agent override, else the server-wide
+   * default), merged into the CLI's NODE_OPTIONS at spawn. Unset or 0 = uncapped.
+   */
+  memoryCapMb?: number
   workspace: WorkspaceSpec
 }
 

@@ -20,6 +20,7 @@ import {
 } from './cursorResume'
 import { assertVolumeHasSpace } from '../diskPressure'
 import { cliKillDiagnostic } from '../runFailure'
+import { memoryCapEnvEntry } from '../runnerMemory'
 import { WORKSPACES_BASE } from '../../main/utils/paths'
 
 /** Stderr kept to judge why the CLI died (only its last line is inspected). */
@@ -192,6 +193,7 @@ export class LocalWorkerFactory implements WorkerFactory {
     // 3. Environment: the worker's own env overlaid with the orchestrator-
     // resolved entries (API key, GH_TOKEN, timeouts, agent envVars).
     const env: NodeJS.ProcessEnv = { ...process.env, ...spec.env }
+    Object.assign(env, memoryCapEnvEntry(spec.memoryCapMb ?? 0, env.NODE_OPTIONS))
     if (spec.runner === 'claude') {
       // Pre-trust the workspace so Claude honors the repo's .claude/settings.json
       // instead of warning "this workspace has not been trusted" and dropping its
