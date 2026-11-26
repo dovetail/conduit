@@ -29,12 +29,14 @@ describe('assertAgentRepositoryChangeAllowed', () => {
     )
   })
 
-  it('refuses moving off a repository the editor cannot see', async () => {
-    await expect(assertAgentRepositoryChangeAllowed('hidden', 'a', access(['a']))).rejects.toThrow(
-      "isn't shared with you"
-    )
-    await expect(assertAgentRepositoryChangeAllowed('hidden', null, access(['a']))).rejects.toThrow(
-      "isn't shared with you"
+  it('allows replacing or clearing a repository the editor cannot see', async () => {
+    await expect(assertAgentRepositoryChangeAllowed('hidden', 'a', access(['a']))).resolves.toBeUndefined()
+    await expect(assertAgentRepositoryChangeAllowed('hidden', null, access(['a']))).resolves.toBeUndefined()
+  })
+
+  it('refuses replacing a repository the editor cannot see with another one they cannot see', async () => {
+    await expect(assertAgentRepositoryChangeAllowed('hidden', 'other', access(['a']))).rejects.toThrow(
+      'do not have access'
     )
   })
 

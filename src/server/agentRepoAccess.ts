@@ -12,9 +12,10 @@ function normalize(id: string | null | undefined): string | null {
  * Guard the repository an agent points at.
  *
  * - Choosing a repository requires that it exists and is shared with the viewer.
- * - Moving off a repository the viewer can't see is refused, so someone the repo
- *   isn't shared with can't clear or swap a workspace they can't see. A deleted
- *   repository is not a secret, so it can always be cleared or replaced.
+ * - Moving off the current repository is always allowed, including one the viewer
+ *   can't see. Whoever can edit the agent already controls what it runs, and
+ *   without this nobody could replace a repository after its owner left or
+ *   stopped sharing it.
  * - Sending the unchanged value is always fine (editors autosave the whole
  *   draft), so an agent keeps working with a repository its editor can't see.
  */
@@ -23,14 +24,10 @@ export async function assertAgentRepositoryChangeAllowed(
   next: string | null | undefined,
   accessOf: RepositoryAccessOf
 ): Promise<void> {
-  const from = normalize(current)
   const to = normalize(next)
-  if (from === to) return
+  if (normalize(current) === to) return
 
   if (to && (await accessOf(to)) !== 'visible') {
     throw new ClientError('You do not have access to that repository')
-  }
-  if (from && (await accessOf(from)) === 'hidden') {
-    throw new ClientError("This agent uses a repository that isn't shared with you, so it can't be changed")
   }
 }
