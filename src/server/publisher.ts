@@ -19,6 +19,10 @@ import { readRunOutputMessages } from './utils'
  * never used as a fallback — a malformed block skips publishing rather than
  * dumping the full run.
  *
+ * A block may hold a divider, `<!--CONDUIT:THREAD-->`. Slack posts the text
+ * before it as the channel message and the text after it as a reply in that
+ * message's thread. Other targets receive both parts as one message.
+ *
  * Agents that never emit a publish marker deliver only their last message,
  * labelled as such — never the whole transcript. Failed runs post a short
  * failure notice instead of their output.
@@ -103,6 +107,41 @@ export function buildFailureNotice(
   // sendEmail each convert this the same way they convert agent-authored
   // publish blocks, so this notice renders correctly on every target type.
   return `:warning: **${agentName}** run failed.\n\n${reason}\n\n[View run](${url})`
+}
+
+// ── Threads ──────────────────────────────────────────────────────────────────
+
+const THREAD_DIVIDER_RE = /(?:<!--|&lt;!--)\s*CONDUIT\s*:\s*THREAD\s*(?:-->|--&gt;)/gi
+
+export interface ThreadedMessage {
+  /** The message that is posted to the channel. */
+  headline: string
+  /** The reply posted in the headline's thread, when the message has one. */
+  thread?: string
+}
+
+/**
+ * Split a publish block at its first thread divider. A message with no divider,
+ * or with nothing on one side of it, has no thread and is returned whole.
+ * Exported for unit tests.
+ */
+export function splitThreadedMessage(message: string): ThreadedMessage {
+  const first = new RegExp(THREAD_DIVIDER_RE.source, 'i').exec(message)
+  if (!first) return { headline: message }
+
+  const headline = message.slice(0, first.index).trim()
+  const thread = message
+    .slice(first.index + first[0].length)
+    .replace(new RegExp(THREAD_DIVIDER_RE.source, 'gi'), '')
+    .trim()
+
+  if (!headline) return { headline: thread }
+  return thread ? { headline, thread } : { headline }
+}
+
+/** The message as one piece of text, for targets that cannot post a thread. */
+export function joinThreadedMessage({ headline, thread }: ThreadedMessage): string {
+  return thread ? `${headline}\n\n${thread}` : headline
 }
 
 // ── Slack ────────────────────────────────────────────────────────────────────
@@ -322,7 +361,12 @@ interface SlackBlock {
   text?: { type: string; text: string }
 }
 
-async function postToSlack(config: SlackPublishConfig, message: string): Promise<void> {
+/** Post one Slack message and return its timestamp, or undefined when the target is a webhook. */
+async function postSlackMessage(
+  config: SlackPublishConfig,
+  message: string,
+  threadTs?: string
+): Promise<string | undefined> {
   const slackMessage = markdownToSlackMrkdwn(message)
 
   const sections = splitSlackSections(slackMessage)
@@ -350,8 +394,10 @@ async function postToSlack(config: SlackPublishConfig, message: string): Promise
       const text = await res.text()
       throw new Error(`Slack webhook failed: ${res.status} ${text}`)
     }
+    return undefined
   } else if (config.botToken) {
     body.channel = config.channel
+    if (threadTs) body.thread_ts = threadTs
     const res = await fetch('https://slack.com/api/chat.postMessage', {
       method: 'POST',
       headers: {
@@ -360,11 +406,30 @@ async function postToSlack(config: SlackPublishConfig, message: string): Promise
       },
       body: JSON.stringify(body),
     })
-    const data = await res.json() as { ok: boolean; error?: string }
+    const data = await res.json() as { ok: boolean; error?: string; ts?: string }
     if (!data.ok) throw new Error(`Slack API error: ${data.error}`)
+    return data.ts
   } else {
     throw new Error('Slack config requires either webhookUrl or botToken')
   }
+}
+
+/**
+ * Post a publish block to Slack. A block with a thread divider becomes a channel
+ * message plus a reply in its thread. A webhook cannot reply in a thread (Slack
+ * returns no message timestamp for it), so a webhook gets both parts in one message.
+ * Exported for unit tests.
+ */
+export async function postToSlack(config: SlackPublishConfig, message: string): Promise<void> {
+  const threaded = splitThreadedMessage(message)
+  if (!threaded.thread || config.webhookUrl || !config.botToken) {
+    await postSlackMessage(config, joinThreadedMessage(threaded))
+    return
+  }
+
+  const ts = await postSlackMessage(config, threaded.headline)
+  if (!ts) throw new Error('Slack returned no message timestamp for the thread')
+  await postSlackMessage(config, threaded.thread, ts)
 }
 
 // ── Email ────────────────────────────────────────────────────────────────────
@@ -581,6 +646,8 @@ export async function publishRunResult(
     ? publishContent.slice(0, 39000) + '\n…(truncated)'
     : publishContent
 
+  const unthreadedMessage = joinThreadedMessage(splitThreadedMessage(message))
+
   const outcomes: PublishOutcome[] = []
   for (const targetId of agent.publishTargetIds) {
     const target = await getPublishTarget(targetId)
@@ -596,11 +663,11 @@ export async function publishRunResult(
           const subject = emailConfig.subject
             .replace('{{agentName}}', agent.name)
             .replace('{{status}}', run.status)
-          await sendEmail({ ...emailConfig, subject }, message)
+          await sendEmail({ ...emailConfig, subject }, unthreadedMessage)
           break
         }
         case 'webhook':
-          await postToWebhook(target.config as WebhookPublishConfig, message, agent.name, run.id)
+          await postToWebhook(target.config as WebhookPublishConfig, unthreadedMessage, agent.name, run.id)
           break
       }
       outcomes.push({ targetName: target.name, ok: true })

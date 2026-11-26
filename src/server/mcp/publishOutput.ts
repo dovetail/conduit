@@ -1,6 +1,8 @@
 /** Canonical publish-block delimiters. Must stay extractable by `resolveRunPublishMessage`. */
 export const PUBLISH_OPEN = '<!--CONDUIT:PUBLISH-->'
 export const PUBLISH_CLOSE = '<!--/CONDUIT:PUBLISH-->'
+/** Optional divider inside a publish block. Must stay recognised by `splitThreadedMessage`. */
+export const THREAD_DIVIDER = '<!--CONDUIT:THREAD-->'
 
 /**
  * What a prompt has to tell its agent so publish targets receive a clean
@@ -14,6 +16,7 @@ ${PUBLISH_OPEN}
 The deliverable, in standard markdown (**bold**, [text](url), headings, lists). Not Slack mrkdwn.
 ${PUBLISH_CLOSE}
 
+- To post a short channel message with the detail in a Slack thread, put ${THREAD_DIVIDER} on its own line inside the block. The text before it is the channel message and the text after it is the thread reply. Email and webhooks get both parts as one message.
 - Only the text inside the block is posted. Without a block, Conduit posts the last message and labels it as having no publish summary.
 - Once an opening marker appears, surrounding narration is never used as a fallback. An empty block publishes nothing.
 - If several blocks appear, the last non-empty one is posted.

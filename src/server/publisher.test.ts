@@ -1,10 +1,13 @@
-import { describe, it, expect } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import {
+  joinThreadedMessage,
+  postToSlack,
   resolveRunPublishMessage,
   selectPublishContent,
   splitSlackSections,
   buildFailureNotice,
   markdownToSlackMrkdwn,
+  splitThreadedMessage,
   SLACK_SECTION_MAX_CHARS,
 } from './publisher'
 
@@ -289,5 +292,118 @@ describe('buildFailureNotice', () => {
   it('falls back to a generic reason when the run has no last line', () => {
     const notice = buildFailureNotice('FE bot', { id: 'r', agentId: 'a' }, 'http://localhost:7456')
     expect(notice).toContain('No failure reason was recorded')
+  })
+})
+
+describe('splitThreadedMessage', () => {
+  it('returns a message with no divider whole', () => {
+    expect(splitThreadedMessage('One line.')).toEqual({ headline: 'One line.' })
+  })
+
+  it('splits at the divider and trims both sides', () => {
+    const message = ['**Run done**', '', '<!--CONDUIT:THREAD-->', '', '- detail one', '- detail two'].join('\n')
+    expect(splitThreadedMessage(message)).toEqual({
+      headline: '**Run done**',
+      thread: '- detail one\n- detail two',
+    })
+  })
+
+  it('accepts an HTML-escaped divider with extra whitespace', () => {
+    expect(splitThreadedMessage('Head\n&lt;!-- CONDUIT:THREAD --&gt;\nBody')).toEqual({
+      headline: 'Head',
+      thread: 'Body',
+    })
+  })
+
+  it('splits at the first divider and drops later ones', () => {
+    expect(splitThreadedMessage('Head\n<!--CONDUIT:THREAD-->\nOne\n<!--CONDUIT:THREAD-->\nTwo')).toEqual({
+      headline: 'Head',
+      thread: 'One\n\nTwo',
+    })
+  })
+
+  it('has no thread when nothing follows the divider', () => {
+    expect(splitThreadedMessage('Head\n<!--CONDUIT:THREAD-->\n  ')).toEqual({ headline: 'Head' })
+  })
+
+  it('posts the whole text as the headline when nothing precedes the divider', () => {
+    expect(splitThreadedMessage('<!--CONDUIT:THREAD-->\nOnly body')).toEqual({ headline: 'Only body' })
+  })
+
+  it('is not split by a thread divider that sits outside the extracted publish block', () => {
+    const stdout = ['<!--CONDUIT:PUBLISH-->', 'Head', '<!--CONDUIT:THREAD-->', 'Body', '<!--/CONDUIT:PUBLISH-->'].join('\n')
+    expect(resolveRunPublishMessage(stdout)).toBe('Head\n<!--CONDUIT:THREAD-->\nBody')
+  })
+})
+
+describe('joinThreadedMessage', () => {
+  it('joins the headline and thread with a blank line', () => {
+    expect(joinThreadedMessage({ headline: 'Head', thread: 'Body' })).toBe('Head\n\nBody')
+  })
+
+  it('returns the headline when there is no thread', () => {
+    expect(joinThreadedMessage({ headline: 'Head' })).toBe('Head')
+  })
+})
+
+describe('postToSlack threads', () => {
+  const fetchMock = vi.fn()
+
+  afterEach(() => {
+    fetchMock.mockReset()
+    vi.unstubAllGlobals()
+  })
+
+  function stubSlack(...responses: Array<{ ok: boolean; ts?: string; error?: string }>) {
+    for (const response of responses) {
+      fetchMock.mockResolvedValueOnce({ ok: true, json: async () => response, text: async () => '' })
+    }
+    vi.stubGlobal('fetch', fetchMock)
+  }
+
+  const requestBody = (call: number) => JSON.parse(fetchMock.mock.calls[call][1].body as string)
+  const bot = { botToken: 'xoxb-test', channel: 'C123' }
+
+  it('posts the headline, then the rest as a reply in its thread', async () => {
+    stubSlack({ ok: true, ts: '1700000000.000100' }, { ok: true, ts: '1700000000.000200' })
+
+    await postToSlack(bot, 'Run **done**\n<!--CONDUIT:THREAD-->\n- detail')
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(requestBody(0)).toMatchObject({ channel: 'C123', text: 'Run *done*' })
+    expect(requestBody(0).thread_ts).toBeUndefined()
+    expect(requestBody(1)).toMatchObject({ channel: 'C123', thread_ts: '1700000000.000100', text: '• detail' })
+  })
+
+  it('posts a single message when there is no divider', async () => {
+    stubSlack({ ok: true, ts: '1700000000.000100' })
+
+    await postToSlack(bot, 'Just one message')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(requestBody(0).thread_ts).toBeUndefined()
+  })
+
+  it('posts both parts in one message for a webhook, which cannot reply in a thread', async () => {
+    stubSlack({ ok: true })
+
+    await postToSlack({ webhookUrl: 'https://hooks.slack.com/services/T/B/X', channel: 'C123' }, 'Head\n<!--CONDUIT:THREAD-->\nBody')
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(requestBody(0).text).toBe('Head\n\nBody')
+  })
+
+  it('fails when Slack returns no timestamp to thread under', async () => {
+    stubSlack({ ok: true })
+
+    await expect(postToSlack(bot, 'Head\n<!--CONDUIT:THREAD-->\nBody')).rejects.toThrow('no message timestamp')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not post the thread when the headline fails', async () => {
+    stubSlack({ ok: false, error: 'channel_not_found' })
+
+    await expect(postToSlack(bot, 'Head\n<!--CONDUIT:THREAD-->\nBody')).rejects.toThrow('channel_not_found')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })
