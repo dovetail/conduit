@@ -217,6 +217,8 @@ Your formatted summary here (supports **markdown** and [links](url))
 
 Parsing accepts a few common agent mistakes (HTML-escaped comments, `<!--CONDUIT:END-->`, a repeated opening tag as the closer, or a missing closer). Once an opening marker appears, surrounding run narration is never used as a fallback.
 
+To post a short channel message with the detail in a thread, put `<!--CONDUIT:THREAD-->` on its own line inside the block. For a Slack bot token, the text before the divider is posted to the channel and the text after it is posted as a reply in that message's thread. A Slack webhook cannot reply in a thread, so it gets both parts in one message, as do email and webhook targets.
+
 For Slack, markdown is converted to mrkdwn; for email, to HTML. Webhooks receive `{ content, agent, runId, timestamp }`.
 
 ### GitHub App authentication
